@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: superbot
+    env: docker
+    region: frankfurt  # или другой регион по вашему выбору
+    plan: free
+    branch: main
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false 
