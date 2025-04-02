@@ -9,6 +9,7 @@ from .config import settings
 from .database.database import init_db, get_session
 from .handlers import chat_handler, command_handler
 from .scheduler import schedule_refresh
+from .lock import ProcessLock
 
 # Configure logging
 logging.basicConfig(
@@ -29,44 +30,54 @@ async def startup_notification(bot: Bot):
         logger.error(f"Failed to send startup notification: {e}")
 
 async def main():
-    # Initialize bot and dispatcher
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    dp = Dispatcher()
-    
-    # Initialize database
-    await init_db()
-    
-    # Register routers
-    dp.include_router(chat_handler.router)
-    dp.include_router(command_handler.router)
-    
-    # Send startup notification
-    await startup_notification(bot)
-    
-    # Start background tasks
-    async def start_scheduler():
-        async for session in get_session():
-            await schedule_refresh(session, settings.OWNER_ID, bot)
-    
-    # Create tasks
-    scheduler_task = asyncio.create_task(start_scheduler())
-    
-    # Start polling
+    # Initialize process lock
+    lock = ProcessLock()
+    if not lock.acquire():
+        logger.error("Another bot instance is already running. Exiting...")
+        return
+
     try:
-        logger.info("Starting bot...")
-        await dp.start_polling(bot)
-    finally:
-        # Cancel background tasks
-        scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            pass
+        # Initialize bot and dispatcher
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+        dp = Dispatcher()
         
-        await bot.session.close()
+        # Initialize database
+        await init_db()
+        
+        # Register routers
+        dp.include_router(chat_handler.router)
+        dp.include_router(command_handler.router)
+        
+        # Send startup notification
+        await startup_notification(bot)
+        
+        # Start background tasks
+        async def start_scheduler():
+            async for session in get_session():
+                await schedule_refresh(session, settings.OWNER_ID, bot)
+        
+        # Create tasks
+        scheduler_task = asyncio.create_task(start_scheduler())
+        
+        # Start polling
+        try:
+            logger.info("Starting bot...")
+            await dp.start_polling(bot)
+        finally:
+            # Cancel background tasks
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+            
+            await bot.session.close()
+    finally:
+        # Release the lock
+        lock.release()
 
 if __name__ == "__main__":
     asyncio.run(main()) 
