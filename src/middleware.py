@@ -15,18 +15,22 @@ class DatabaseMiddleware(BaseMiddleware):
         event: Union[Message, CallbackQuery],
         data: Dict[str, Any]
     ) -> Any:
-        async for session in get_session():
-            try:
-                # Store session in bot object
-                event.bot.session = session
-                result = await handler(event, data)
-                await session.commit()
-                return result
-            except Exception as e:
-                logger.error(f"Error in middleware: {str(e)}")
+        session = None
+        try:
+            # Get a new session
+            session = await get_session().__anext__()
+            # Store session in bot object
+            event.bot.session = session
+            result = await handler(event, data)
+            await session.commit()
+            return result
+        except Exception as e:
+            logger.error(f"Error in middleware: {str(e)}")
+            if session:
                 await session.rollback()
-                raise e
-            finally:
+            raise e
+        finally:
+            if session:
                 try:
                     await session.close()
                 except Exception as e:

@@ -21,9 +21,10 @@ async def init_db():
         raise
 
 async def get_session() -> AsyncSession:
+    """Get a new database session."""
     try:
-        async with async_session() as session:
-            yield session
+        session = async_session()
+        return session
     except Exception as e:
         logger.error(f"Error creating database session: {str(e)}")
         raise 

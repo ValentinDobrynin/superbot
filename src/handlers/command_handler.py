@@ -48,7 +48,7 @@ async def status_command(message: Message):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    # Get session from data
+    # Get session from bot object
     session = message.bot.session
     
     # Get all chats
