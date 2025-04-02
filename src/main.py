@@ -9,8 +9,9 @@ from dotenv import load_dotenv
 import os
 
 from .handlers import chat_handler, command_handler
-from .database import init_db
+from .database import init_db, get_session
 from .config import settings
+from .middleware import DatabaseMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +30,10 @@ if not validate_token(settings.BOT_TOKEN):
 # Initialize bot and dispatcher
 bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
+
+# Add database middleware
+dp.message.middleware(DatabaseMiddleware())
+dp.callback_query.middleware(DatabaseMiddleware())
 
 # Register handlers
 dp.include_router(chat_handler.router)

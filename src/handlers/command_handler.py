@@ -8,6 +8,7 @@ from sqlalchemy.sql import func
 from datetime import datetime, timedelta
 from fastapi import Depends
 
+from ..database import get_session
 from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
 from ..services.openai_service import OpenAIService
@@ -19,7 +20,7 @@ def is_owner(user_id: int) -> bool:
     return user_id == settings.OWNER_ID
 
 @router.message(Command("help"))
-async def help_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def help_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Show help message."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -45,7 +46,7 @@ async def help_command(message: Message, db: AsyncSession = Depends(get_db)):
     await message.answer(help_text, parse_mode=None)
 
 @router.message(Command("status"))
-async def status_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def status_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Show bot status."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -65,7 +66,7 @@ async def status_command(message: Message, db: AsyncSession = Depends(get_db)):
     await message.answer(status_text, parse_mode=None)
 
 @router.message(Command("shutdown"))
-async def shutdown_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def shutdown_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Toggle global shutdown mode."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -75,7 +76,7 @@ async def shutdown_command(message: Message, db: AsyncSession = Depends(get_db))
     await message.answer(f"Global shutdown mode is now {status}")
 
 @router.message(Command("setmode"))
-async def setmode_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def setmode_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Enable/disable bot in chats."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -100,7 +101,7 @@ async def setmode_command(message: Message, db: AsyncSession = Depends(get_db)):
     )
 
 @router.callback_query(F.data.startswith("toggle_chat_"))
-async def toggle_chat(callback: CallbackQuery, db: AsyncSession = Depends(get_db)):
+async def toggle_chat(callback: CallbackQuery, db: AsyncSession = Depends(get_session)):
     """Toggle chat active status."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -119,7 +120,7 @@ async def toggle_chat(callback: CallbackQuery, db: AsyncSession = Depends(get_db
         )
 
 @router.message(Command("set_probability"))
-async def set_probability_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def set_probability_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Set response probability for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -144,7 +145,7 @@ async def set_probability_command(message: Message, db: AsyncSession = Depends(g
         await message.answer("❌ Usage: /set_probability <chat_id> <probability>")
 
 @router.message(Command("set_importance"))
-async def set_importance_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def set_importance_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Set importance threshold for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -169,7 +170,7 @@ async def set_importance_command(message: Message, db: AsyncSession = Depends(ge
         await message.answer("❌ Usage: /set_importance <chat_id> <threshold>")
 
 @router.message(Command("smart_mode"))
-async def smart_mode_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def smart_mode_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Toggle smart mode for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -190,7 +191,7 @@ async def smart_mode_command(message: Message, db: AsyncSession = Depends(get_db
         await message.answer("❌ Usage: /smart_mode <chat_id> <on/off>")
 
 @router.message(Command("list_chats"))
-async def list_chats_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def list_chats_command(message: Message, db: AsyncSession = Depends(get_session)):
     """List all chats."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -213,7 +214,7 @@ async def list_chats_command(message: Message, db: AsyncSession = Depends(get_db
     await message.answer(text, parse_mode=None)
 
 @router.message(Command("summ"))
-async def summarize_chat_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def summarize_chat_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Generate chat summary."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -248,7 +249,7 @@ async def summarize_chat_command(message: Message, db: AsyncSession = Depends(ge
         await message.answer("❌ Usage: /summ <chat_id>")
 
 @router.message(Command("upload"))
-async def upload_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def upload_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Upload new training data."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -279,7 +280,7 @@ async def upload_command(message: Message, db: AsyncSession = Depends(get_db)):
     await message.answer(f"✅ Style guide updated:\n\n{new_style}")
 
 @router.message(Command("refresh"))
-async def refresh_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def refresh_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Refresh style guide."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -305,7 +306,7 @@ async def refresh_command(message: Message, db: AsyncSession = Depends(get_db)):
     await message.answer(f"✅ Style guide refreshed:\n\n{new_style}")
 
 @router.message(Command("test"))
-async def test_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def test_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Test bot response."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -330,7 +331,7 @@ async def test_command(message: Message, db: AsyncSession = Depends(get_db)):
         await message.answer(f"❌ Error: {str(e)}")
 
 @router.message(Command("tag"))
-async def tag_command(message: Message, command: CommandObject, db: AsyncSession = Depends(get_db)):
+async def tag_command(message: Message, command: CommandObject, db: AsyncSession = Depends(get_session)):
     """Handle tag-related commands."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -431,7 +432,7 @@ async def tag_command(message: Message, command: CommandObject, db: AsyncSession
         await message.answer("Invalid command format")
 
 @router.message(Command("thread"))
-async def thread_command(message: Message, command: CommandObject, db: AsyncSession = Depends(get_db)):
+async def thread_command(message: Message, command: CommandObject, db: AsyncSession = Depends(get_session)):
     """Handle thread-related commands."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -535,7 +536,7 @@ async def thread_command(message: Message, command: CommandObject, db: AsyncSess
         await message.answer("Invalid command format")
 
 @router.message(Command("set_style"))
-async def set_style_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def set_style_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Set chat style."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -559,7 +560,7 @@ async def set_style_command(message: Message, db: AsyncSession = Depends(get_db)
     )
 
 @router.callback_query(F.data.startswith("select_chat_"))
-async def select_chat_for_style(callback: CallbackQuery, db: AsyncSession = Depends(get_db)):
+async def select_chat_for_style(callback: CallbackQuery, db: AsyncSession = Depends(get_session)):
     """Select chat for style setting."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -592,7 +593,7 @@ async def select_chat_for_style(callback: CallbackQuery, db: AsyncSession = Depe
     )
 
 @router.callback_query(F.data.startswith("set_style_"))
-async def set_chat_style(callback: CallbackQuery, db: AsyncSession = Depends(get_db)):
+async def set_chat_style(callback: CallbackQuery, db: AsyncSession = Depends(get_session)):
     """Set chat style."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -612,7 +613,7 @@ async def set_chat_style(callback: CallbackQuery, db: AsyncSession = Depends(get
         )
 
 @router.message(Command("set_threshold"))
-async def set_threshold_command(message: Message, db: AsyncSession = Depends(get_db)):
+async def set_threshold_command(message: Message, db: AsyncSession = Depends(get_session)):
     """Set importance threshold."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -636,7 +637,7 @@ async def set_threshold_command(message: Message, db: AsyncSession = Depends(get
     )
 
 @router.callback_query(F.data.startswith("select_chat_threshold_"))
-async def select_chat_for_threshold(callback: CallbackQuery, db: AsyncSession = Depends(get_db)):
+async def select_chat_for_threshold(callback: CallbackQuery, db: AsyncSession = Depends(get_session)):
     """Select chat for threshold setting."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -668,7 +669,7 @@ async def select_chat_for_threshold(callback: CallbackQuery, db: AsyncSession = 
     )
 
 @router.callback_query(F.data.startswith("set_threshold_"))
-async def set_chat_threshold(callback: CallbackQuery, db: AsyncSession = Depends(get_db)):
+async def set_chat_threshold(callback: CallbackQuery, db: AsyncSession = Depends(get_session)):
     """Set chat threshold."""
     if callback.from_user.id != settings.OWNER_ID:
         return
