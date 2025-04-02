@@ -6,7 +6,10 @@ import asyncio
 import numpy as np
 from typing import List, Optional
 
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+client = AsyncOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    timeout=60.0  # Set a reasonable timeout
+)
 
 class OpenAIService:
     @staticmethod
