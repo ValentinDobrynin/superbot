@@ -270,20 +270,53 @@ async def smart_mode_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    try:
-        _, chat_id, mode = message.text.split()
-        chat_id = int(chat_id)
-        mode = mode.lower() == "on"
-        
-        chat = await session.get(Chat, chat_id)
-        if chat:
-            chat.smart_mode = mode
-            await session.commit()
-            await message.answer(f"✅ Smart mode {'enabled' if mode else 'disabled'} for chat {chat.title}", parse_mode=None)
-        else:
-            await message.answer("❌ Chat not found", parse_mode=None)
-    except (IndexError, ValueError):
-        await message.answer("❌ Usage: /smart_mode <chat_id> <on/off>", parse_mode=None)
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Create inline keyboard
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{'✅' if chat.smart_mode else '❌'} {chat.title}",
+                callback_data=f"smart_mode_{chat.chat_id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select a chat to toggle smart mode:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(lambda c: c.data.startswith("smart_mode_"))
+async def process_smart_mode_callback(callback_query: CallbackQuery, session: AsyncSession):
+    """Process smart mode toggle callback."""
+    if callback_query.from_user.id != settings.OWNER_ID:
+        await callback_query.answer("You are not authorized to use this command.")
+        return
+    
+    chat_id = int(callback_query.data.split("_")[2])
+    
+    # Get chat
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        await callback_query.answer("Chat not found.")
+        return
+    
+    # Toggle smart mode
+    chat.smart_mode = not chat.smart_mode
+    await session.commit()
+    
+    # Update button text
+    keyboard = callback_query.message.reply_markup
+    for row in keyboard.inline_keyboard:
+        for button in row:
+            if button.callback_data == callback_query.data:
+                button.text = f"{'✅' if chat.smart_mode else '❌'} {chat.title}"
+    
+    await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.title}")
 
 @router.message(Command("list_chats"))
 async def list_chats_command(message: Message, session: AsyncSession):
