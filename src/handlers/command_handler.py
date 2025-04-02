@@ -72,7 +72,7 @@ async def status_command(message: Message, session: AsyncSession):
     for chat in chats:
         status_text += f"📱 {chat.title}:\n"
         status_text += f"  • Active: {'✅' if chat.is_active else '❌'}\n"
-        status_text += f"  • Type: {chat.chat_type.value}\n"
+        status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
         status_text += f"  • Probability: {chat.response_probability:.2%}\n"
         status_text += f"  • Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
         if chat.smart_mode:
