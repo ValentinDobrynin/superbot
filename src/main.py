@@ -52,8 +52,8 @@ async def main():
         await init_db()
         
         # Register routers
-        dp.include_router(chat_handler.router)
         dp.include_router(command_handler.router)
+        dp.include_router(chat_handler.router)
         
         # Send startup notification
         await startup_notification(bot)

@@ -19,7 +19,7 @@ def is_owner(user_id: int) -> bool:
 
 @router.message(Command("help"))
 async def help_command(message: Message):
-    if not is_owner(message.from_user.id):
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
         return
     
     help_text = """🤖 vAIlentin 2.0 - Available Commands:
@@ -39,11 +39,11 @@ async def help_command(message: Message):
 /tag - Manage message tags
 /thread - Manage message threads"""
     
-    await message.answer(help_text)
+    await message.answer(help_text, parse_mode=None)
 
 @router.message(Command("status"))
 async def status_command(message: Message, session: AsyncSession):
-    if not is_owner(message.from_user.id):
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
         return
     
     # Get all chats
