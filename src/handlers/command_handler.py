@@ -16,6 +16,7 @@ from ..services.context_service import ContextService
 router = Router()
 
 class TestStates(StatesGroup):
+    waiting_for_chat = State()
     waiting_for_message = State()
 
 def is_owner(user_id: int) -> bool:
@@ -34,7 +35,6 @@ async def help_command(message: Message, session: AsyncSession):
 /set_probability <chat_id> <probability> - Set response probability
 /set_importance <chat_id> <threshold> - Set importance threshold
 /set_style - Set chat style
-/set_threshold - Set importance threshold
 /smart_mode <chat_id> <on/off> - Toggle smart mode
 /list_chats - List all chats
 /summ <chat_id> - Generate chat summary
@@ -59,9 +59,12 @@ async def status_command(message: Message, session: AsyncSession):
     
     status_text = "🤖 Bot Status:\n\n"
     
+    # Add global shutdown status
+    status_text += f"🔒 Global Status: {'🔴 Shutdown' if settings.is_shutdown else '🟢 Active'}\n\n"
+    
     for chat in chats:
         status_text += f"📱 {chat.title}:\n"
-        status_text += f"  • Active: {'✅' if chat.is_active else '❌'}\n"
+        status_text += f"  • Active: {'✅' if chat.is_active and not settings.is_shutdown else '❌'}\n"
         status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
         status_text += f"  • Probability: {chat.response_probability*100:.2f}%\n"
         status_text += f"  • Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
@@ -153,7 +156,7 @@ async def shutdown_command(message: Message, session: AsyncSession):
     
     settings.is_shutdown = not settings.is_shutdown
     status = "enabled" if settings.is_shutdown else "disabled"
-    await message.answer(f"Global shutdown mode is now {status}")
+    await message.answer(f"Global shutdown mode is now {status}", parse_mode=None)
 
 @router.message(Command("setmode"))
 async def setmode_command(message: Message, session: AsyncSession):
@@ -201,7 +204,7 @@ async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
 
 @router.message(Command("set_probability"))
 async def set_probability_command(message: Message, session: AsyncSession):
-    """Set response probability for chat."""
+    """Set response probability for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
@@ -211,22 +214,22 @@ async def set_probability_command(message: Message, session: AsyncSession):
         probability = float(probability)
         
         if not 0 <= probability <= 1:
-            await message.answer("❌ Probability must be between 0 and 1")
+            await message.answer("❌ Probability must be between 0 and 1", parse_mode=None)
             return
             
         chat = await session.get(Chat, chat_id)
         if chat:
             chat.response_probability = probability
             await session.commit()
-            await message.answer(f"✅ Response probability set to {probability} for chat {chat.title}")
+            await message.answer(f"✅ Response probability set to {probability} for chat {chat.title}", parse_mode=None)
         else:
-            await message.answer("❌ Chat not found")
+            await message.answer("❌ Chat not found", parse_mode=None)
     except (IndexError, ValueError):
-        await message.answer("❌ Usage: /set_probability <chat_id> <probability>")
+        await message.answer("❌ Usage: /set_probability <chat_id> <probability>", parse_mode=None)
 
 @router.message(Command("set_importance"))
 async def set_importance_command(message: Message, session: AsyncSession):
-    """Set importance threshold for chat."""
+    """Set importance threshold for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
@@ -236,18 +239,18 @@ async def set_importance_command(message: Message, session: AsyncSession):
         threshold = float(threshold)
         
         if not 0 <= threshold <= 1:
-            await message.answer("❌ Threshold must be between 0 and 1")
+            await message.answer("❌ Threshold must be between 0 and 1", parse_mode=None)
             return
             
         chat = await session.get(Chat, chat_id)
         if chat:
             chat.importance_threshold = threshold
             await session.commit()
-            await message.answer(f"✅ Importance threshold set to {threshold} for chat {chat.title}")
+            await message.answer(f"✅ Importance threshold set to {threshold} for chat {chat.title}", parse_mode=None)
         else:
-            await message.answer("❌ Chat not found")
+            await message.answer("❌ Chat not found", parse_mode=None)
     except (IndexError, ValueError):
-        await message.answer("❌ Usage: /set_importance <chat_id> <threshold>")
+        await message.answer("❌ Usage: /set_importance <chat_id> <threshold>", parse_mode=None)
 
 @router.message(Command("smart_mode"))
 async def smart_mode_command(message: Message, session: AsyncSession):
@@ -255,53 +258,20 @@ async def smart_mode_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    # Create inline keyboard
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    for chat in chats:
-        keyboard.add(
-            InlineKeyboardButton(
-                f"{'✅' if chat.smart_mode else '❌'} {chat.title}",
-                callback_data=f"smart_mode_{chat.chat_id}"
-            )
-        )
-    
-    await message.answer(
-        "Select a chat to toggle smart mode:",
-        reply_markup=keyboard
-    )
-
-@router.callback_query(lambda c: c.data.startswith("smart_mode_"))
-async def process_smart_mode_callback(callback_query: CallbackQuery, session: AsyncSession):
-    """Process smart mode toggle callback."""
-    if callback_query.from_user.id != settings.OWNER_ID:
-        await callback_query.answer("You are not authorized to use this command.")
-        return
-    
-    chat_id = int(callback_query.data.split("_")[2])
-    
-    # Get chat
-    chat = await session.get(Chat, chat_id)
-    if not chat:
-        await callback_query.answer("Chat not found.")
-        return
-    
-    # Toggle smart mode
-    chat.smart_mode = not chat.smart_mode
-    await session.commit()
-    
-    # Update button text
-    keyboard = callback_query.message.reply_markup
-    for row in keyboard.inline_keyboard:
-        for button in row:
-            if button.callback_data == callback_query.data:
-                button.text = f"{'✅' if chat.smart_mode else '❌'} {chat.title}"
-    
-    await callback_query.message.edit_reply_markup(reply_markup=keyboard)
-    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.title}")
+    try:
+        _, chat_id, mode = message.text.split()
+        chat_id = int(chat_id)
+        mode = mode.lower() == "on"
+        
+        chat = await session.get(Chat, chat_id)
+        if chat:
+            chat.smart_mode = mode
+            await session.commit()
+            await message.answer(f"✅ Smart mode {'enabled' if mode else 'disabled'} for chat {chat.title}", parse_mode=None)
+        else:
+            await message.answer("❌ Chat not found", parse_mode=None)
+    except (IndexError, ValueError):
+        await message.answer("❌ Usage: /smart_mode <chat_id> <on/off>", parse_mode=None)
 
 @router.message(Command("list_chats"))
 async def list_chats_command(message: Message, session: AsyncSession):
@@ -424,8 +394,29 @@ async def test_command(message: Message, state: FSMContext):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    await state.set_state(TestStates.waiting_for_message)
-    await message.answer("Please send a test message:")
+    await state.set_state(TestStates.waiting_for_chat)
+    await message.answer("Please enter the chat ID to test:")
+
+@router.message(TestStates.waiting_for_chat)
+async def process_test_chat(message: Message, state: FSMContext, session: AsyncSession):
+    """Process chat ID for test."""
+    if message.from_user.id != settings.OWNER_ID:
+        return
+    
+    try:
+        chat_id = int(message.text)
+        chat = await session.get(Chat, chat_id)
+        if not chat:
+            await message.answer("❌ Chat not found in database", parse_mode=None)
+            await state.clear()
+            return
+        
+        await state.update_data(chat_id=chat_id)
+        await state.set_state(TestStates.waiting_for_message)
+        await message.answer("Please send a test message:")
+    except ValueError:
+        await message.answer("❌ Please enter a valid chat ID", parse_mode=None)
+        await state.clear()
 
 @router.message(TestStates.waiting_for_message)
 async def process_test_message(message: Message, state: FSMContext, session: AsyncSession):
@@ -433,24 +424,29 @@ async def process_test_message(message: Message, state: FSMContext, session: Asy
     if message.from_user.id != settings.OWNER_ID:
         return
     
+    # Get chat ID from state
+    data = await state.get_data()
+    chat_id = data.get("chat_id")
+    
     # Get chat
-    chat = await session.get(Chat, message.chat.id)
+    chat = await session.get(Chat, chat_id)
     if not chat:
-        await message.answer("❌ Chat not found in database")
+        await message.answer("❌ Chat not found in database", parse_mode=None)
         await state.clear()
         return
     
     # Generate response
     try:
+        openai_service = OpenAIService()
         response = await openai_service.generate_response(
             message.text,
             chat.chat_type,
             chat.smart_mode,
             chat.importance_threshold
         )
-        await message.answer(f"🤖 Test Response:\n\n{response}")
+        await message.answer(f"🤖 Test Response:\n\n{response}", parse_mode=None)
     except Exception as e:
-        await message.answer(f"❌ Error generating response: {str(e)}")
+        await message.answer(f"❌ Error generating response: {str(e)}", parse_mode=None)
     
     await state.clear()
 
@@ -733,82 +729,5 @@ async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
         
         await callback.message.edit_text(
             f"Style for {chat.title} set to {style}",
-            reply_markup=None
-        )
-
-@router.message(Command("set_threshold"))
-async def set_threshold_command(message: Message, session: AsyncSession):
-    """Set importance threshold."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"🎯 {chat.title} (current: {chat.importance_threshold:.2f})",
-                callback_data=f"select_chat_threshold_{chat.id}"
-            )
-        ])
-    
-    await message.answer(
-        "Select chat to set importance threshold:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
-@router.callback_query(F.data.startswith("select_chat_threshold_"))
-async def select_chat_for_threshold(callback: CallbackQuery, session: AsyncSession):
-    """Select chat for threshold setting."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    chat_id = int(callback.data.split("_")[3])
-    
-    # Create threshold selection keyboard
-    keyboard = [
-        [
-            InlineKeyboardButton(text="0.1", callback_data=f"set_threshold_{chat_id}_0.1"),
-            InlineKeyboardButton(text="0.2", callback_data=f"set_threshold_{chat_id}_0.2"),
-            InlineKeyboardButton(text="0.3", callback_data=f"set_threshold_{chat_id}_0.3"),
-        ],
-        [
-            InlineKeyboardButton(text="0.4", callback_data=f"set_threshold_{chat_id}_0.4"),
-            InlineKeyboardButton(text="0.5", callback_data=f"set_threshold_{chat_id}_0.5"),
-            InlineKeyboardButton(text="0.6", callback_data=f"set_threshold_{chat_id}_0.6"),
-        ],
-        [
-            InlineKeyboardButton(text="0.7", callback_data=f"set_threshold_{chat_id}_0.7"),
-            InlineKeyboardButton(text="0.8", callback_data=f"set_threshold_{chat_id}_0.8"),
-            InlineKeyboardButton(text="0.9", callback_data=f"set_threshold_{chat_id}_0.9"),
-        ]
-    ]
-    
-    await callback.message.edit_text(
-        "Select importance threshold for this chat:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
-@router.callback_query(F.data.startswith("set_threshold_"))
-async def set_chat_threshold(callback: CallbackQuery, session: AsyncSession):
-    """Set chat threshold."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    _, _, chat_id, threshold = callback.data.split("_")
-    chat_id = int(chat_id)
-    threshold = float(threshold)
-    
-    # Update chat threshold
-    chat = await session.get(Chat, chat_id)
-    if chat:
-        chat.importance_threshold = threshold
-        await session.commit()
-        
-        await callback.message.edit_text(
-            f"Importance threshold for {chat.title} set to {threshold:.2f}",
             reply_markup=None
         ) 
