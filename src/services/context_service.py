@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from uuid import UUID
 import logging
 from collections import Counter
@@ -166,31 +166,69 @@ class ContextService:
 
         return related_threads
 
-    async def get_thread_stats(self, thread: MessageThread) -> dict:
-        """Get statistics for a thread."""
+    async def get_thread_stats(self, thread: MessageThread) -> Dict[str, Any]:
+        """Get statistics for a message thread."""
+        # Get all messages in the thread
         query = select(Message).where(Message.thread_id == thread.id)
         result = await self.session.execute(query)
-        result_scalars = await result.scalars()
-        messages = await result_scalars.all()
-
+        messages = result.scalars().all()
+        
         if not messages:
-            return {
-                "message_count": 0,
-                "unique_users": 0,
-                "top_tags": []
-            }
-
-        # Calculate statistics
+            return {}
+        
+        # Calculate basic statistics
+        total_messages = len(messages)
         unique_users = len(set(msg.user_id for msg in messages))
-        tag_counter = Counter()
-        for msg in messages:
-            for tag_assoc in msg.tags:
-                tag_counter[tag_assoc.tag.name] += 1
-
-        top_tags = [tag for tag, _ in tag_counter.most_common()]
-
+        
+        # Calculate duration
+        first_message = min(messages, key=lambda m: m.timestamp)
+        last_message = max(messages, key=lambda m: m.timestamp)
+        duration = (last_message.timestamp - first_message.timestamp).total_seconds() / 3600
+        
+        # Get top tags
+        tag_query = select(MessageTag).join(Tag).where(MessageTag.message_id.in_([m.id for m in messages]))
+        result = await self.session.execute(tag_query)
+        message_tags = result.scalars().all()
+        
+        tag_counts = Counter(tag.tag.name for tag in message_tags)
+        top_tags = tag_counts.most_common(5)
+        
         return {
-            "message_count": len(messages),
+            "total_messages": total_messages,
             "unique_users": unique_users,
+            "duration_hours": duration,
             "top_tags": top_tags
-        } 
+        }
+
+    async def generate_chat_summary(self, messages: List[Message]) -> str:
+        """Generate a summary of chat messages using OpenAI."""
+        if not messages:
+            return "No messages to summarize."
+        
+        # Prepare messages for summarization
+        messages_text = "\n".join([
+            f"{msg.timestamp.strftime('%Y-%m-%d %H:%M')} - User {msg.user_id}: {msg.text}"
+            for msg in messages
+        ])
+        
+        # Create prompt for summarization
+        prompt = f"""Please analyze the following chat messages and provide a concise summary. 
+Focus on the main topics discussed, key decisions made, and any important information shared.
+
+Chat Messages:
+{messages_text}
+
+Please provide a summary in the following format:
+1. Main Topics: [list main topics discussed]
+2. Key Decisions: [list any decisions made]
+3. Important Information: [list important information shared]
+4. Overall Tone: [describe the overall tone of the conversation]"""
+
+        # Generate summary using OpenAI
+        openai_service = OpenAIService()
+        response = await openai_service.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-3.5-turbo"
+        )
+        
+        return response 
