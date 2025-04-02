@@ -13,5 +13,13 @@ class DatabaseMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         async for session in get_session():
-            data["session"] = session
-            return await handler(event, data) 
+            try:
+                data["session"] = session
+                result = await handler(event, data)
+                await session.commit()
+                return result
+            except Exception as e:
+                await session.rollback()
+                raise e
+            finally:
+                await session.close() 

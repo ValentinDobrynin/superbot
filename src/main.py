@@ -60,8 +60,20 @@ async def main():
         
         # Start background tasks
         async def start_scheduler():
-            async for session in get_session():
-                await schedule_refresh(session, settings.OWNER_ID, bot)
+            while True:
+                try:
+                    async for session in get_session():
+                        try:
+                            await schedule_refresh(session, settings.OWNER_ID, bot)
+                            await session.commit()
+                        except Exception as e:
+                            logger.error(f"Error in scheduler: {e}")
+                            await session.rollback()
+                        finally:
+                            await session.close()
+                except Exception as e:
+                    logger.error(f"Error getting session in scheduler: {e}")
+                await asyncio.sleep(3600)  # Sleep for 1 hour
         
         # Create tasks
         scheduler_task = asyncio.create_task(start_scheduler())
