@@ -226,9 +226,6 @@ Please provide a summary in the following format:
 
         # Generate summary using OpenAI
         openai_service = OpenAIService()
-        response = await openai_service.chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            model="gpt-3.5-turbo"
-        )
+        response = await openai_service.chat_completion(prompt)
         
         return response 
