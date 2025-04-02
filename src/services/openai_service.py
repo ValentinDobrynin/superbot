@@ -21,17 +21,30 @@ class OpenAIService:
         await asyncio.sleep(delay)
         
         # Prepare context from recent messages
-        context = "\n".join([f"{'User' if msg['is_user'] else 'Assistant'}: {msg['text']}" 
+        context = "\n".join([f"{'User' if msg['is_user'] else 'Valentin'}: {msg['text']}" 
                            for msg in context_messages])
         
         # Construct the prompt
-        prompt = f"""You are Valentin's AI assistant, mimicking their communication style in a {chat_type.value} chat.
+        prompt = f"""You are simulating a Telegram user named Valentin. Based on the user's historical messages and reactions in the chat, you have learned their communication style, tone, frequency of replies, and typical triggers for engaging in conversation.
+
+Your job is to generate replies that imitate Valentin as closely as possible.
+When composing a response, always consider:
+
+1. The style and tone Valentin typically uses (casual, professional, humorous, sarcastic, etc.).
+2. How often he replies and in what situations (e.g., when he's tagged, when a topic interests him, or when someone asks a direct question).
+3. His preferred formats (e.g., emojis, short dry comments, voice of authority, etc.).
+
+You are not ChatGPT — you are 🤖 ~ Valentin, responding as if you're him. Do not explain or over-elaborate. Stay in character.
+
+If no reply is appropriate based on Valentin's history and style, stay silent.
+
+Chat Type: {chat_type.value}
 Previous conversation:
 {context}
 
 Current message: {message}
 
-Style guidelines:
+Style guidelines from training:
 {style_prompt}
 
 Respond in Valentin's style. Keep the response concise and natural. Use appropriate emojis and informal language if it matches the style.
@@ -92,80 +105,43 @@ Response:"""
     @staticmethod
     async def analyze_message_importance(message: str) -> float:
         """Analyze message importance for smart mode."""
-        prompt = f"""Analyze the importance of this message and return a number between 0 and 1.
+        prompt = f"""You are an assistant trained to evaluate the importance of a message in a group chat context. Your goal is to return a **single numeric value from 0.0 to 1.0** representing how important this message is for the user to respond to.
 
-Criteria for importance scoring:
-1.0 - Critical messages:
-- Direct questions or requests requiring immediate response
-- Emergency situations
-- Important business/work decisions
-- Direct mentions of Valentin
-- Messages with "срочно" or "важно"
-- Time-sensitive requests
-- Critical bug reports or system issues
-- Direct task assignments
-- Meeting requests for important topics
+### Scoring Guidelines:
 
-0.7-0.9 - High importance:
-- Technical discussions requiring expertise
-- Project planning and coordination
-- Scheduling meetings or calls
-- Questions about ongoing work
-- Code reviews and technical feedback
-- Feature requests and proposals
-- Status updates on critical tasks
-- Questions about project architecture
-- Important documentation updates
-- Team coordination messages
+- **1.0 — Critical**
+  - Message directly asks the user a question or requests an action
+  - Mentions the user explicitly (e.g., @Valentin)
+  - Relates to urgent decisions, deadlines, emergencies, or personal matters
 
-0.4-0.6 - Medium importance:
-- General discussions
-- Updates without urgency
-- Non-critical questions
-- Social interactions
-- General project updates
-- Casual technical discussions
-- Non-urgent meeting requests
-- General feedback and suggestions
-- Regular status updates
-- Team announcements
+- **0.8 — High Importance**
+  - Asks for advice, help, or expertise
+  - Important group coordination or planning
+  - Sensitive or emotionally charged topic
+  - Not urgent but likely to require a thoughtful response
 
-0.1-0.3 - Low importance:
-- Small talk
-- Casual observations
-- Emoji-only messages
-- Reactions to others
-- General greetings
-- Non-technical discussions
-- Personal updates
-- Memes and jokes
-- General acknowledgments
-- Non-urgent notifications
+- **0.6 — Medium Importance**
+  - General question to the group that the user may want to respond to
+  - Ongoing group discussion with relevance to the user
+  - New information that may be useful, but not urgent
 
-0.0 - Ignore:
-- System messages
-- Bot commands
-- Automated notifications
-- Empty or meaningless messages
-- Spam or promotional content
-- Off-topic discussions
-- Personal messages not related to work
-- Automated status updates
-- Technical logs or debug messages
-- Duplicate messages
+- **0.4 — Low Importance**
+  - Casual conversation, jokes, or memes
+  - Social chatter or general observations
+  - Greeting messages or emoji replies
+  - User is not mentioned or expected to respond
 
-Additional factors to consider:
-- Message length (longer messages often indicate more importance)
-- Presence of technical terms or code snippets
-- Number of participants mentioned
-- Time of day (work hours vs. off-hours)
-- Message format (structured vs. casual)
-- Presence of action items or deadlines
-- Context from previous messages
+- **0.2 — Very Low Importance**
+  - Spam, automated replies, bots
+  - System messages or notifications
+  - Repetitive or off-topic content
 
-Message to analyze: {message}
+### Instructions:
+- Use your judgment based on the message content and context.
+- Return a **single number between 0.0 and 1.0** (e.g., 0.8, 0.4).
+- Do **not** include any explanation or additional text.
 
-Return only the importance score (e.g. 0.7):"""
+Message to analyze: {message}"""
         
         response = await client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -182,3 +158,47 @@ Return only the importance score (e.g. 0.7):"""
             return max(0.0, min(1.0, score))  # Ensure score is between 0 and 1
         except ValueError:
             return 0.5  # Default to medium importance if parsing fails 
+
+    @staticmethod
+    async def refresh_style(conversation_text: str) -> str:
+        """Refresh the style guide based on new conversation data."""
+        prompt = f"""You are analyzing a Telegram chat history to extract the unique communication style of a user named **Valentin**.  
+Your goal is to generate a detailed **style guide** that can be used by an AI to imitate Valentin's way of writing and reacting in chats.
+
+Focus on identifying consistent **patterns** and **behaviors** based on the provided conversation.
+
+### Analyze and extract:
+1. **Language Style** — Typical vocabulary, sentence structure, and language preferences (e.g., simple/direct, slang, formal, etc.)
+2. **Tone & Attitude** — Formality level, humor, sarcasm, emotional range, assertiveness, etc.
+3. **Emoji & Formatting Usage** — Frequency and types of emojis, use of punctuation, caps, bold, etc.
+4. **Response Length & Structure** — Short or long replies, use of lists, replies in-line vs separate, flow of thoughts
+5. **Common Phrases & Expressions** — Repeated phrases, signature endings, fillers, or slang Valentin uses regularly
+6. **Do's and Don'ts** — Specific habits to **emulate** (Do's) and things to **avoid** (Don'ts) based on his actual usage
+
+### Output Format (strictly use this):
+
+1. **Language Style**: [brief but rich description]
+2. **Tone & Attitude**: [description]
+3. **Emoji & Formatting Usage**: [description]
+4. **Response Structure**: [description]
+5. **Common Phrases & Expressions**:
+   - "[phrase 1]"
+   - "[phrase 2]"
+6. **Do's and Don'ts**:
+   - ✅ Do: [behavior to copy]
+   - ❌ Don't: [behavior to avoid]
+
+### Conversation Sample:
+{conversation_text}"""
+        
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a communication style analyzer. Extract and describe the user's unique writing style."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        return response.choices[0].message.content.strip() 
