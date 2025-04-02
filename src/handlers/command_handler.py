@@ -1,6 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.sql import func
@@ -12,6 +14,9 @@ from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
 
 router = Router()
+
+class TestStates(StatesGroup):
+    waiting_for_message = State()
 
 def is_owner(user_id: int) -> bool:
     return user_id == settings.OWNER_ID
@@ -44,7 +49,7 @@ async def help_command(message: Message, session: AsyncSession):
 
 @router.message(Command("status"))
 async def status_command(message: Message, session: AsyncSession):
-    """Show bot status."""
+    """Show bot status with detailed statistics."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
@@ -52,13 +57,91 @@ async def status_command(message: Message, session: AsyncSession):
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
-    status_text = "Bot Status:\n\n"
+    status_text = "🤖 Bot Status:\n\n"
+    
     for chat in chats:
-        status_text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
-        status_text += f"Active: {'✅' if chat.is_active else '❌'}\n"
-        status_text += f"Response Probability: {chat.response_probability}\n"
-        status_text += f"Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
-        status_text += f"Importance Threshold: {chat.importance_threshold}\n\n"
+        status_text += f"📱 {chat.title}:\n"
+        status_text += f"  • Active: {'✅' if chat.is_active else '❌'}\n"
+        status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
+        status_text += f"  • Probability: {chat.response_probability*100:.2f}%\n"
+        status_text += f"  • Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
+        
+        # Get message statistics
+        now = datetime.now()
+        day_ago = now - timedelta(days=1)
+        week_ago = now - timedelta(days=7)
+        
+        # Get messages from last 24h
+        day_messages = await session.execute(
+            select(Message)
+            .where(Message.chat_id == chat.chat_id)
+            .where(Message.timestamp >= day_ago)
+        )
+        day_messages = day_messages.scalars().all()
+        
+        # Get messages from last week
+        week_messages = await session.execute(
+            select(Message)
+            .where(Message.chat_id == chat.chat_id)
+            .where(Message.timestamp >= week_ago)
+        )
+        week_messages = week_messages.scalars().all()
+        
+        # Calculate statistics
+        avg_length = sum(len(m.text) for m in week_messages) / len(week_messages) if week_messages else 0
+        
+        # Get user activity
+        user_stats = {}
+        for msg in week_messages:
+            user_stats[msg.user_id] = user_stats.get(msg.user_id, 0) + 1
+        
+        # Get day activity
+        day_stats = {}
+        for msg in week_messages:
+            day = msg.timestamp.strftime("%A")
+            day_stats[day] = day_stats.get(day, 0) + 1
+        
+        # Get hour activity
+        hour_stats = {}
+        for msg in week_messages:
+            hour = msg.timestamp.strftime("%H:00")
+            hour_stats[hour] = hour_stats.get(hour, 0) + 1
+        
+        # Add statistics to status
+        status_text += f"  • Avg Message Length: {avg_length:.0f} chars\n"
+        
+        if user_stats:
+            status_text += "  • Top Active Users:\n"
+            for user_id, count in sorted(user_stats.items(), key=lambda x: x[1], reverse=True)[:3]:
+                status_text += f"    - User {user_id}: {count} messages\n"
+        
+        if day_stats:
+            most_active_day = max(day_stats.items(), key=lambda x: x[1])
+            status_text += f"  • Most Active Day: {most_active_day[0]} ({most_active_day[1]} messages)\n"
+        
+        # 24h stats
+        day_responses = sum(1 for m in day_messages if m.is_bot)
+        day_rate = (day_responses / len(day_messages) * 100) if day_messages else 0
+        status_text += "  • 24h Stats:\n"
+        status_text += f"    - Messages: {len(day_messages)}\n"
+        status_text += f"    - Responses: {day_responses}\n"
+        status_text += f"    - Rate: {day_rate:.1f}%\n"
+        
+        # 7d stats
+        week_responses = sum(1 for m in week_messages if m.is_bot)
+        week_rate = (week_responses / len(week_messages) * 100) if week_messages else 0
+        status_text += "  • 7d Stats:\n"
+        status_text += f"    - Messages: {len(week_messages)}\n"
+        status_text += f"    - Responses: {week_responses}\n"
+        status_text += f"    - Rate: {week_rate:.1f}%\n"
+        
+        if hour_stats:
+            peak_hour = max(hour_stats.items(), key=lambda x: x[1])
+            quiet_hour = min(hour_stats.items(), key=lambda x: x[1])
+            status_text += f"  • Peak Activity: {peak_hour[0]} ({peak_hour[1]} messages)\n"
+            status_text += f"  • Quiet Hours: {quiet_hour[0]}\n"
+        
+        status_text += "\n"
     
     await message.answer(status_text, parse_mode=None)
 
@@ -168,24 +251,57 @@ async def set_importance_command(message: Message, session: AsyncSession):
 
 @router.message(Command("smart_mode"))
 async def smart_mode_command(message: Message, session: AsyncSession):
-    """Toggle smart mode for chat."""
+    """Toggle smart mode for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    try:
-        _, chat_id, mode = message.text.split()
-        chat_id = int(chat_id)
-        mode = mode.lower() == "on"
-        
-        chat = await session.get(Chat, chat_id)
-        if chat:
-            chat.smart_mode = mode
-            await session.commit()
-            await message.answer(f"✅ Smart mode {'enabled' if mode else 'disabled'} for chat {chat.title}")
-        else:
-            await message.answer("❌ Chat not found")
-    except (IndexError, ValueError):
-        await message.answer("❌ Usage: /smart_mode <chat_id> <on/off>")
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Create inline keyboard
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    for chat in chats:
+        keyboard.add(
+            InlineKeyboardButton(
+                f"{'✅' if chat.smart_mode else '❌'} {chat.title}",
+                callback_data=f"smart_mode_{chat.chat_id}"
+            )
+        )
+    
+    await message.answer(
+        "Select a chat to toggle smart mode:",
+        reply_markup=keyboard
+    )
+
+@router.callback_query(lambda c: c.data.startswith("smart_mode_"))
+async def process_smart_mode_callback(callback_query: CallbackQuery, session: AsyncSession):
+    """Process smart mode toggle callback."""
+    if callback_query.from_user.id != settings.OWNER_ID:
+        await callback_query.answer("You are not authorized to use this command.")
+        return
+    
+    chat_id = int(callback_query.data.split("_")[2])
+    
+    # Get chat
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        await callback_query.answer("Chat not found.")
+        return
+    
+    # Toggle smart mode
+    chat.smart_mode = not chat.smart_mode
+    await session.commit()
+    
+    # Update button text
+    keyboard = callback_query.message.reply_markup
+    for row in keyboard.inline_keyboard:
+        for button in row:
+            if button.callback_data == callback_query.data:
+                button.text = f"{'✅' if chat.smart_mode else '❌'} {chat.title}"
+    
+    await callback_query.message.edit_reply_markup(reply_markup=keyboard)
+    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.title}")
 
 @router.message(Command("list_chats"))
 async def list_chats_command(message: Message, session: AsyncSession):
@@ -303,29 +419,40 @@ async def refresh_command(message: Message, session: AsyncSession):
     await message.answer(f"✅ Style guide refreshed:\n\n{new_style}")
 
 @router.message(Command("test"))
-async def test_command(message: Message, session: AsyncSession):
-    """Test bot response."""
+async def test_command(message: Message, state: FSMContext):
+    """Test bot response to a message."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
+    await state.set_state(TestStates.waiting_for_message)
+    await message.answer("Please send a test message:")
+
+@router.message(TestStates.waiting_for_message)
+async def process_test_message(message: Message, state: FSMContext, session: AsyncSession):
+    """Process test message and generate response."""
+    if message.from_user.id != settings.OWNER_ID:
+        return
+    
+    # Get chat
+    chat = await session.get(Chat, message.chat.id)
+    if not chat:
+        await message.answer("❌ Chat not found in database")
+        await state.clear()
+        return
+    
+    # Generate response
     try:
-        test_message = " ".join(message.text.split()[1:])
-        if not test_message:
-            await message.answer("❌ Please provide a test message")
-            return
-            
-        # Generate response
-        openai_service = OpenAIService()
         response = await openai_service.generate_response(
-            message=test_message,
-            chat_type=ChatType.PRIVATE,
-            context_messages=[],
-            style_prompt="Test mode"
+            message.text,
+            chat.chat_type,
+            chat.smart_mode,
+            chat.importance_threshold
         )
-        
-        await message.answer(f"🤖 Test response:\n\n{response}")
+        await message.answer(f"🤖 Test Response:\n\n{response}")
     except Exception as e:
-        await message.answer(f"❌ Error: {str(e)}")
+        await message.answer(f"❌ Error generating response: {str(e)}")
+    
+    await state.clear()
 
 @router.message(Command("tag"))
 async def tag_command(message: Message, command: CommandObject, session: AsyncSession):
