@@ -67,16 +67,24 @@ Response:"""
     @staticmethod
     async def chat_completion(prompt: str, temperature: float = 0.3) -> str:
         """Generic chat completion method."""
-        response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=temperature,
-            max_tokens=500
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temperature,
+                max_tokens=500
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if "insufficient_quota" in str(e):
+                return "⚠️ OpenAI API quota exceeded. Please check your billing details."
+            elif "rate_limit" in str(e).lower():
+                return "⚠️ OpenAI API rate limit reached. Please try again later."
+            else:
+                return f"⚠️ Error: {str(e)}"
 
     @staticmethod
     async def get_embedding(text: str) -> List[float]:
