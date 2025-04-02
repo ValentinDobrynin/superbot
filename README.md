@@ -120,17 +120,16 @@ Telegram бот с расширенными возможностями упра�
 
 1. Клонируйте репозиторий
 2. Установите зависимости: `pip install -r requirements.txt`
-3. Создайте файл `.env` с настройками:
-   ```
-   BOT_TOKEN=your_bot_token
-   OPENAI_API_KEY=your_openai_key
-   OWNER_ID=your_telegram_id
-   ```
+3. Настройте переменные окружения на Render:
+   - `BOT_TOKEN` - токен вашего Telegram бота
+   - `OPENAI_API_KEY` - ключ API OpenAI
+   - `OWNER_ID` - ваш Telegram ID
+   - `DATABASE_URL` - URL базы данных PostgreSQL
 4. Запустите бота: `python -m src.main`
 
 ## Требования
 
 - Python 3.9+
-- SQLite
+- PostgreSQL
 - OpenAI API ключ
 - Telegram Bot Token 
