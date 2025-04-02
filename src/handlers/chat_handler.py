@@ -13,6 +13,33 @@ from ..config import settings
 
 router = Router()
 
+def is_owner(user_id: int) -> bool:
+    return user_id == settings.OWNER_ID
+
+@router.message(Command("help"))
+async def help_command(message: Message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    help_text = """🤖 vAIlentin 2.0 - Available Commands:
+
+/help - Show this help message
+/status - Show bot status and settings
+/list_chats - List all chats and their modes
+/setmode - Enable/disable bot in chat
+/set_prob - Set response probability
+/smart - Toggle smart mode
+/refresh - Update communication style
+/set_style - Set chat style (work/friendly/mixed)
+/shutdown - Global silence mode
+/test <msg> - Test response to message
+/summ - Generate chat summary
+/upload - Upload chat dump for training
+/tag - Manage message tags
+/thread - Manage message threads"""
+    
+    await message.answer(help_text)
+
 def should_respond(message: str, chat: Chat) -> bool:
     """Determine if the bot should respond to the message."""
     # Check global shutdown
