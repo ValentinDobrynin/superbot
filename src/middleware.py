@@ -18,7 +18,7 @@ class DatabaseMiddleware(BaseMiddleware):
         session = None
         try:
             # Get a new session
-            session = await get_session().__anext__()
+            session = await get_session()
             # Store session in bot object
             event.bot.session = session
             result = await handler(event, data)
