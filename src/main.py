@@ -15,6 +15,7 @@ from .config import settings
 from .handlers import command_handler, message_handler, callback_handler
 from .database.database import init_db, get_session
 from .middleware import DatabaseMiddleware
+from .services.notification_service import NotificationService
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +48,10 @@ async def main():
     dp.include_router(command_handler.router)
     dp.include_router(message_handler.router)
     dp.include_router(callback_handler.router)
+    
+    # Send startup notification
+    notification_service = NotificationService(bot, settings.OWNER_ID)
+    await notification_service.notify_startup()
     
     # Start polling
     logger.info("Starting bot...")

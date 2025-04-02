@@ -17,7 +17,8 @@ class DatabaseMiddleware(BaseMiddleware):
     ) -> Any:
         async for session in get_session():
             try:
-                data["session"] = session
+                # Store session in bot object
+                event.bot.session = session
                 result = await handler(event, data)
                 await session.commit()
                 return result
