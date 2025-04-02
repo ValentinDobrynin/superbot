@@ -1,14 +1,13 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command, CommandObject
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.sql import func
 from datetime import datetime, timedelta
 from fastapi import Depends
 
-from ..database import get_session
+from ..database.database import get_session
 from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
 from ..services.openai_service import OpenAIService
