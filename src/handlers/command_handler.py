@@ -37,13 +37,28 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             else:
                 logger.info(f"Chat title is already up to date: {chat.title}")
         else:
-            logger.warning(f"Chat with chat_id {chat_id} not found in database")
+            # Create new chat if it doesn't exist
+            logger.info(f"Creating new chat with title: {chat_info.title}")
+            chat = Chat(
+                chat_id=chat_id,
+                title=chat_info.title,
+                is_active=True,
+                is_silent=False,
+                response_probability=0.5,
+                importance_threshold=0.5,
+                smart_mode=True,
+                chat_type=ChatType.mixed
+            )
+            session.add(chat)
+            await session.commit()
     except Exception as e:
         logger.error(f"Failed to update chat title for chat_id {chat_id}: {e}")
 
 class TestStates(StatesGroup):
     waiting_for_chat = State()
     waiting_for_message = State()
+    waiting_for_probability = State()
+    waiting_for_importance = State()
 
 def is_owner(user_id: int) -> bool:
     return user_id == settings.OWNER_ID
@@ -54,22 +69,33 @@ async def help_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    help_text = """Available commands:
+    help_text = """🤖 Bot Commands:
+
+📊 Status & Info:
 /help - Show this help message
-/status - Show bot status
-/setmode - Enable/disable bot in chats
-/set_probability <chat_id> <probability> - Set response probability
-/set_importance <chat_id> <threshold> - Set importance threshold
-/set_style - Set chat style
-/smart_mode <chat_id> <on/off> - Toggle smart mode
-/list_chats - List all chats
+/status - Show bot status and statistics
+/list_chats - List all chats with settings
 /summ <chat_id> - Generate chat summary
+
+⚙️ Chat Settings:
+/setmode - Enable/disable bot in chats
+/set_style - Set chat style (work/friendly/mixed)
+/set_probability - Set response probability
+/set_importance - Set importance threshold
+/smart_mode - Toggle smart mode
+/silent - Toggle silent mode (read-only)
+
+🔄 Training & Style:
 /upload - Upload new training data
 /refresh - Refresh style guide
 /test - Test bot response
-/shutdown - Global silence mode
+
+🏷 Content Management:
 /tag - Manage message tags
-/thread - Manage message threads"""
+/thread - Manage message threads
+
+🔒 System:
+/shutdown - Toggle global silence mode"""
     
     await message.answer(help_text, parse_mode=None)
 
@@ -318,24 +344,134 @@ async def set_probability_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    try:
-        _, chat_id, probability = message.text.split()
-        chat_id = int(chat_id)
-        probability = float(probability)
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎯 {chat.title} ({chat.response_probability*100:.0f}%)",
+                callback_data=f"select_chat_prob_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to set response probability:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("select_chat_prob_"))
+async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSession):
+    """Select chat for probability setting."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[3])
+    
+    # Create probability selection keyboard
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="25%",
+                callback_data=f"set_prob_{chat_id}_0.25"
+            ),
+            InlineKeyboardButton(
+                text="50%",
+                callback_data=f"set_prob_{chat_id}_0.5"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="75%",
+                callback_data=f"set_prob_{chat_id}_0.75"
+            ),
+            InlineKeyboardButton(
+                text="100%",
+                callback_data=f"set_prob_{chat_id}_1.0"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Custom",
+                callback_data=f"custom_prob_{chat_id}"
+            )
+        ]
+    ]
+    
+    await callback.message.edit_text(
+        "Select response probability:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("set_prob_"))
+async def set_chat_probability(callback: CallbackQuery, session: AsyncSession):
+    """Set chat probability."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    _, _, chat_id, prob = callback.data.split("_")
+    chat_id = int(chat_id)
+    probability = float(prob)
+    
+    # Update chat probability
+    chat = await session.get(Chat, chat_id)
+    if chat:
+        chat.response_probability = probability
+        await session.commit()
         
+        await callback.message.edit_text(
+            f"Response probability for {chat.title} set to {probability*100:.0f}%",
+            reply_markup=None
+        )
+
+@router.callback_query(F.data.startswith("custom_prob_"))
+async def custom_probability(callback: CallbackQuery, state: FSMContext):
+    """Handle custom probability input."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    await state.set_state(TestStates.waiting_for_probability)
+    await state.update_data(chat_id=chat_id)
+    
+    await callback.message.edit_text(
+        "Enter custom probability (0-100):",
+        reply_markup=None
+    )
+
+@router.message(TestStates.waiting_for_probability)
+async def process_custom_probability(message: Message, state: FSMContext, session: AsyncSession):
+    """Process custom probability input."""
+    if message.from_user.id != settings.OWNER_ID:
+        return
+    
+    try:
+        probability = float(message.text) / 100
         if not 0 <= probability <= 1:
-            await message.answer("❌ Probability must be between 0 and 1", parse_mode=None)
+            await message.answer("❌ Probability must be between 0 and 100")
+            await state.clear()
             return
             
+        data = await state.get_data()
+        chat_id = data.get("chat_id")
+        
         chat = await session.get(Chat, chat_id)
         if chat:
             chat.response_probability = probability
             await session.commit()
-            await message.answer(f"✅ Response probability set to {probability} for chat {chat.title}", parse_mode=None)
+            await message.answer(f"✅ Response probability set to {probability*100:.0f}% for {chat.title}")
         else:
-            await message.answer("❌ Chat not found", parse_mode=None)
-    except (IndexError, ValueError):
-        await message.answer("❌ Usage: /set_probability <chat_id> <probability>", parse_mode=None)
+            await message.answer("❌ Chat not found")
+    except ValueError:
+        await message.answer("❌ Please enter a valid number")
+    
+    await state.clear()
 
 @router.message(Command("set_importance"))
 async def set_importance_command(message: Message, session: AsyncSession):
@@ -343,24 +479,134 @@ async def set_importance_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    try:
-        _, chat_id, threshold = message.text.split()
-        chat_id = int(chat_id)
-        threshold = float(threshold)
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎯 {chat.title} ({chat.importance_threshold*100:.0f}%)",
+                callback_data=f"select_chat_imp_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to set importance threshold:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("select_chat_imp_"))
+async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSession):
+    """Select chat for importance setting."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[3])
+    
+    # Create importance selection keyboard
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="25%",
+                callback_data=f"set_imp_{chat_id}_0.25"
+            ),
+            InlineKeyboardButton(
+                text="50%",
+                callback_data=f"set_imp_{chat_id}_0.5"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="75%",
+                callback_data=f"set_imp_{chat_id}_0.75"
+            ),
+            InlineKeyboardButton(
+                text="100%",
+                callback_data=f"set_imp_{chat_id}_1.0"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="Custom",
+                callback_data=f"custom_imp_{chat_id}"
+            )
+        ]
+    ]
+    
+    await callback.message.edit_text(
+        "Select importance threshold:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("set_imp_"))
+async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
+    """Set chat importance threshold."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    _, _, chat_id, imp = callback.data.split("_")
+    chat_id = int(chat_id)
+    importance = float(imp)
+    
+    # Update chat importance
+    chat = await session.get(Chat, chat_id)
+    if chat:
+        chat.importance_threshold = importance
+        await session.commit()
         
-        if not 0 <= threshold <= 1:
-            await message.answer("❌ Threshold must be between 0 and 1", parse_mode=None)
+        await callback.message.edit_text(
+            f"Importance threshold for {chat.title} set to {importance*100:.0f}%",
+            reply_markup=None
+        )
+
+@router.callback_query(F.data.startswith("custom_imp_"))
+async def custom_importance(callback: CallbackQuery, state: FSMContext):
+    """Handle custom importance input."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    await state.set_state(TestStates.waiting_for_importance)
+    await state.update_data(chat_id=chat_id)
+    
+    await callback.message.edit_text(
+        "Enter custom importance threshold (0-100):",
+        reply_markup=None
+    )
+
+@router.message(TestStates.waiting_for_importance)
+async def process_custom_importance(message: Message, state: FSMContext, session: AsyncSession):
+    """Process custom importance input."""
+    if message.from_user.id != settings.OWNER_ID:
+        return
+    
+    try:
+        importance = float(message.text) / 100
+        if not 0 <= importance <= 1:
+            await message.answer("❌ Importance must be between 0 and 100")
+            await state.clear()
             return
             
+        data = await state.get_data()
+        chat_id = data.get("chat_id")
+        
         chat = await session.get(Chat, chat_id)
         if chat:
-            chat.importance_threshold = threshold
+            chat.importance_threshold = importance
             await session.commit()
-            await message.answer(f"✅ Importance threshold set to {threshold} for chat {chat.title}", parse_mode=None)
+            await message.answer(f"✅ Importance threshold set to {importance*100:.0f}% for {chat.title}")
         else:
-            await message.answer("❌ Chat not found", parse_mode=None)
-    except (IndexError, ValueError):
-        await message.answer("❌ Usage: /set_importance <chat_id> <threshold>", parse_mode=None)
+            await message.answer("❌ Chat not found")
+    except ValueError:
+        await message.answer("❌ Please enter a valid number")
+    
+    await state.clear()
 
 @router.message(Command("smart_mode"))
 async def smart_mode_command(message: Message, session: AsyncSession):
