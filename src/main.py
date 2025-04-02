@@ -2,6 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
@@ -29,7 +30,10 @@ async def startup_notification(bot: Bot):
 
 async def main():
     # Initialize bot and dispatcher
-    bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     
     # Initialize database
