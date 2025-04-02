@@ -40,7 +40,7 @@ Prefix your response with "🤖 ~ Valentin: "
 Response:"""
         
         response = await client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are Valentin's AI assistant, mimicking their communication style."},
                 {"role": "user", "content": prompt}
@@ -55,7 +55,7 @@ Response:"""
     async def chat_completion(prompt: str, temperature: float = 0.3) -> str:
         """Generic chat completion method."""
         response = await client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
@@ -168,7 +168,7 @@ Message to analyze: {message}
 Return only the importance score (e.g. 0.7):"""
         
         response = await client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a message importance analyzer. Respond only with a number between 0 and 1."},
                 {"role": "user", "content": prompt}

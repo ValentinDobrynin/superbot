@@ -65,6 +65,10 @@ async def get_thread_context(context_service: ContextService, thread: MessageThr
 
 @router.message()
 async def handle_message(message: Message, session: AsyncSession):
+    # Skip processing for commands
+    if message.text and message.text.startswith('/'):
+        return
+        
     # Get chat settings
     chat_query = select(Chat).where(Chat.chat_id == message.chat.id)
     result = await session.execute(chat_query)
@@ -78,6 +82,10 @@ async def handle_message(message: Message, session: AsyncSession):
         )
         session.add(chat)
         await session.commit()
+    
+    # Check if we should respond
+    if not should_respond(message.text or "", chat):
+        return
     
     # Initialize context service
     context_service = ContextService(session)
@@ -105,10 +113,6 @@ async def handle_message(message: Message, session: AsyncSession):
     
     # Update thread context
     await context_service.update_thread_context(thread)
-    
-    # Check if we should respond
-    if not should_respond(message.text or "", chat):
-        return
     
     # Handle smart mode
     if chat.smart_mode and importance < chat.importance_threshold:
