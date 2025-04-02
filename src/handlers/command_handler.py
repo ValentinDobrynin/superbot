@@ -15,6 +15,31 @@ from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
 
 router = Router()
+logger = logging.getLogger(__name__)
+
+async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
+    """Update chat title from Telegram."""
+    try:
+        logger.info(f"Updating chat title for chat_id: {chat_id}")
+        chat_info = await message.bot.get_chat(chat_id)
+        logger.info(f"Got chat info from Telegram: {chat_info.title}")
+        
+        # Get chat from database
+        query = select(Chat).where(Chat.chat_id == chat_id)
+        result = await session.execute(query)
+        chat = result.scalar_one_or_none()
+        
+        if chat:
+            if chat_info.title != chat.title:
+                logger.info(f"Updating chat title from '{chat.title}' to '{chat_info.title}'")
+                chat.title = chat_info.title
+                await session.commit()
+            else:
+                logger.info(f"Chat title is already up to date: {chat.title}")
+        else:
+            logger.warning(f"Chat with chat_id {chat_id} not found in database")
+    except Exception as e:
+        logger.error(f"Failed to update chat title for chat_id {chat_id}: {e}")
 
 class TestStates(StatesGroup):
     waiting_for_chat = State()
@@ -283,13 +308,17 @@ async def smart_mode_command(message: Message, session: AsyncSession):
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
     # Create inline keyboard
     keyboard = []
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
                 text=f"{'✅' if chat.smart_mode else '❌'} {chat.title}",
-                callback_data=f"smart_mode_{chat.chat_id}"
+                callback_data=f"smart_mode_{chat.id}"
             )
         ])
     
@@ -457,17 +486,6 @@ async def test_command(message: Message, state: FSMContext):
     
     await state.set_state(TestStates.waiting_for_chat)
     await message.answer("Please enter the chat ID to test:")
-
-async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
-    """Update chat title from Telegram."""
-    try:
-        chat_info = await message.bot.get_chat(chat_id)
-        chat = await session.get(Chat, chat_id)
-        if chat and chat_info.title != chat.title:
-            chat.title = chat_info.title
-            await session.commit()
-    except Exception as e:
-        logger.error(f"Failed to update chat title: {e}")
 
 @router.message(TestStates.waiting_for_chat)
 async def process_test_chat(message: Message, state: FSMContext, session: AsyncSession):
