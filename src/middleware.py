@@ -19,8 +19,8 @@ class DatabaseMiddleware(BaseMiddleware):
         try:
             # Get a new session
             session = await get_session()
-            # Store session in bot object
-            event.bot.session = session
+            # Store session in data dict instead of bot object
+            data['session'] = session
             result = await handler(event, data)
             await session.commit()
             return result

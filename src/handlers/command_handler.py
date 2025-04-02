@@ -17,7 +17,7 @@ def is_owner(user_id: int) -> bool:
     return user_id == settings.OWNER_ID
 
 @router.message(Command("help"))
-async def help_command(message: Message):
+async def help_command(message: Message, session: AsyncSession):
     """Show help message."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -43,13 +43,10 @@ async def help_command(message: Message):
     await message.answer(help_text, parse_mode=None)
 
 @router.message(Command("status"))
-async def status_command(message: Message):
+async def status_command(message: Message, session: AsyncSession):
     """Show bot status."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
-    # Get session from bot object
-    session = message.bot.session
     
     # Get all chats
     chats = await session.execute(select(Chat))
