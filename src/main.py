@@ -10,6 +10,7 @@ from .database.database import init_db, get_session
 from .handlers import chat_handler, command_handler
 from .scheduler import schedule_refresh
 from .lock import ProcessLock
+from .middleware import DatabaseMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +44,9 @@ async def main():
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         dp = Dispatcher()
+        
+        # Add database middleware
+        dp.message.middleware(DatabaseMiddleware())
         
         # Initialize database
         await init_db()
