@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.sql import func
 from datetime import datetime, timedelta
 
-from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext
+from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
 from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
@@ -79,10 +79,10 @@ async def status_command(message: Message, session: AsyncSession):
             status_text += f"  • Importance Threshold: {chat.importance_threshold:.2f}\n"
         
         # Get weekly messages for detailed analysis
-        messages_query = select(DBMessage).where(
-            DBMessage.chat_id == chat.id,
-            DBMessage.timestamp >= week_ago
-        ).order_by(DBMessage.timestamp)
+        messages_query = select(Message).where(
+            Message.chat_id == chat.id,
+            Message.timestamp >= week_ago
+        ).order_by(Message.timestamp)
         result = await session.execute(messages_query)
         messages = result.scalars().all()
         
@@ -521,10 +521,10 @@ async def refresh_command(message: Message, session: AsyncSession):
             chat_ids = [chat.id for chat in type_chats]
             last_refresh = datetime.utcnow() - timedelta(days=1)  # Get last 24 hours
             
-            messages_query = select(DBMessage).where(
-                DBMessage.chat_id.in_(chat_ids),
-                DBMessage.timestamp >= last_refresh
-            ).order_by(DBMessage.timestamp)
+            messages_query = select(Message).where(
+                Message.chat_id.in_(chat_ids),
+                Message.timestamp >= last_refresh
+            ).order_by(Message.timestamp)
             
             result = await session.execute(messages_query)
             messages = result.scalars().all()
@@ -604,9 +604,9 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
         return
 
     # Get target message
-    query = select(DBMessage).where(
-        DBMessage.chat_id == message.chat.id,
-        DBMessage.message_id == target_msg_id
+    query = select(Message).where(
+        Message.chat_id == message.chat.id,
+        Message.message_id == target_msg_id
     )
     result = await session.execute(query)
     target_msg = result.scalar_one_or_none()
