@@ -38,7 +38,7 @@ async def help_command(message: Message):
 /tag - Manage message tags
 /thread - Manage message threads"""
     
-    await message.answer(help_text)
+    await message.answer(help_text, parse_mode=None)
 
 def should_respond(message: str, chat: Chat) -> bool:
     """Determine if the bot should respond to the message."""
