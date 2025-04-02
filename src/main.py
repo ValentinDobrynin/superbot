@@ -47,6 +47,7 @@ async def main():
         
         # Add database middleware
         dp.message.middleware(DatabaseMiddleware())
+        dp.callback_query.middleware(DatabaseMiddleware())
         
         # Initialize database
         await init_db()
