@@ -19,7 +19,8 @@ class Chat(Base):
     chat_id = Column(Integer, unique=True)
     title = Column(String)
     chat_type = Column(Enum(ChatType))
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)  # False means bot is completely disabled
+    is_silent = Column(Boolean, default=False)  # True means bot reads but doesn't respond
     response_probability = Column(Float, default=0.25)
     smart_mode = Column(Boolean, default=False)
     importance_threshold = Column(Float, default=0.3)  # Threshold for smart mode

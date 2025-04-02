@@ -94,7 +94,15 @@ async def status_command(message: Message, session: AsyncSession):
     
     for chat in chats:
         status_text += f"📱 {chat.title}:\n"
-        status_text += f"  • Active: {'✅' if chat.is_active and not settings.is_shutdown else '❌'}\n"
+        
+        # Show both active and silent status
+        if not chat.is_active:
+            status_text += "  • Status: ❌ Disabled\n"
+        elif chat.is_silent:
+            status_text += "  • Status: 🤫 Silent Mode\n"
+        else:
+            status_text += "  • Status: ✅ Active\n"
+            
         status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
         status_text += f"  • Probability: {chat.response_probability*100:.2f}%\n"
         status_text += f"  • Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
@@ -202,7 +210,7 @@ async def shutdown_command(message: Message, session: AsyncSession):
 
 @router.message(Command("setmode"))
 async def setmode_command(message: Message, session: AsyncSession):
-    """Enable/disable bot in chats."""
+    """Enable/disable bot in chats (complete shutdown)."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
@@ -225,13 +233,42 @@ async def setmode_command(message: Message, session: AsyncSession):
         ])
     
     await message.answer(
-        "Select chat to toggle:",
+        "Select chat to toggle bot activity (❌ = completely disabled):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.message(Command("silent"))
+async def silent_command(message: Message, session: AsyncSession):
+    """Enable/disable silent mode in chats (bot reads but doesn't respond)."""
+    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+        return
+    
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
+    keyboard = []
+    for chat in chats:
+        status = "🤫" if chat.is_silent else "🗣"
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{status} {chat.title}",
+                callback_data=f"toggle_silent_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to toggle silent mode (🤫 = reads but doesn't respond):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
 @router.callback_query(F.data.startswith("toggle_chat_"))
 async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
-    """Toggle chat active status."""
+    """Toggle chat active status (complete shutdown)."""
     if callback.from_user.id != settings.OWNER_ID:
         return
     
@@ -240,11 +277,38 @@ async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
     
     if chat:
         chat.is_active = not chat.is_active
+        # If chat is disabled, also disable silent mode
+        if not chat.is_active:
+            chat.is_silent = False
         await session.commit()
         
         status = "✅" if chat.is_active else "❌"
         await callback.message.edit_text(
-            f"Chat {chat.title} is now {'active' if chat.is_active else 'inactive'}",
+            f"Chat {chat.title} is now {'active' if chat.is_active else 'completely disabled'}",
+            reply_markup=callback.message.reply_markup
+        )
+
+@router.callback_query(F.data.startswith("toggle_silent_"))
+async def toggle_silent(callback: CallbackQuery, session: AsyncSession):
+    """Toggle chat silent mode (reads but doesn't respond)."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    chat = await session.get(Chat, chat_id)
+    
+    if chat:
+        # Can't enable silent mode if chat is completely disabled
+        if not chat.is_active:
+            await callback.answer("❌ Cannot enable silent mode for disabled chat")
+            return
+            
+        chat.is_silent = not chat.is_silent
+        await session.commit()
+        
+        status = "🤫" if chat.is_silent else "🗣"
+        await callback.message.edit_text(
+            f"Chat {chat.title} is now in {'silent' if chat.is_silent else 'active'} mode",
             reply_markup=callback.message.reply_markup
         )
 
