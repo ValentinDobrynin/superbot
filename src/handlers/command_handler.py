@@ -150,13 +150,36 @@ async def status_command(message: Message, session: AsyncSession):
 
 @router.message(Command("shutdown"))
 async def shutdown_command(message: Message, session: AsyncSession):
-    """Toggle global shutdown mode."""
+    """Toggle global shutdown mode and delete webhook."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     settings.is_shutdown = not settings.is_shutdown
     status = "enabled" if settings.is_shutdown else "disabled"
-    await message.answer(f"Global shutdown mode is now {status}", parse_mode=None)
+    
+    if settings.is_shutdown:
+        # Delete webhook when shutting down
+        try:
+            await message.bot.delete_webhook(drop_pending_updates=True)
+            await message.answer(
+                "🔴 Global shutdown mode enabled\n"
+                "✅ Webhook deleted\n"
+                "ℹ️ Bot will stop processing new messages",
+                parse_mode=None
+            )
+        except Exception as e:
+            await message.answer(
+                f"🔴 Global shutdown mode enabled\n"
+                f"❌ Failed to delete webhook: {str(e)}\n"
+                f"⚠️ Bot may continue processing messages",
+                parse_mode=None
+            )
+    else:
+        await message.answer(
+            "🟢 Global shutdown mode disabled\n"
+            "⚠️ Note: You need to restart the bot to re-enable webhook",
+            parse_mode=None
+        )
 
 @router.message(Command("setmode"))
 async def setmode_command(message: Message, session: AsyncSession):
