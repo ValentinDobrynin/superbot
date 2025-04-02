@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.sql import func
 from datetime import datetime, timedelta
+import logging
 
 from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
@@ -56,6 +57,10 @@ async def status_command(message: Message, session: AsyncSession):
     # Get all chats
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
     
     status_text = "🤖 Bot Status:\n\n"
     
@@ -179,6 +184,10 @@ async def setmode_command(message: Message, session: AsyncSession):
     # Get all chats
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
     
     keyboard = []
     for chat in chats:
@@ -327,6 +336,10 @@ async def list_chats_command(message: Message, session: AsyncSession):
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
     if not chats:
         await message.answer("❌ No chats found")
         return
@@ -353,6 +366,9 @@ async def summarize_chat_command(message: Message, session: AsyncSession):
         if not chat:
             await message.answer("❌ Chat not found")
             return
+            
+        # Update chat title
+        await update_chat_title(message, chat_id, session)
             
         # Get messages from the last week
         week_ago = datetime.now() - timedelta(days=7)
@@ -442,6 +458,17 @@ async def test_command(message: Message, state: FSMContext):
     await state.set_state(TestStates.waiting_for_chat)
     await message.answer("Please enter the chat ID to test:")
 
+async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
+    """Update chat title from Telegram."""
+    try:
+        chat_info = await message.bot.get_chat(chat_id)
+        chat = await session.get(Chat, chat_id)
+        if chat and chat_info.title != chat.title:
+            chat.title = chat_info.title
+            await session.commit()
+    except Exception as e:
+        logger.error(f"Failed to update chat title: {e}")
+
 @router.message(TestStates.waiting_for_chat)
 async def process_test_chat(message: Message, state: FSMContext, session: AsyncSession):
     """Process chat ID for test."""
@@ -455,6 +482,9 @@ async def process_test_chat(message: Message, state: FSMContext, session: AsyncS
             await message.answer("❌ Chat not found in database", parse_mode=None)
             await state.clear()
             return
+        
+        # Update chat title from Telegram
+        await update_chat_title(message, chat_id, session)
         
         await state.update_data(chat_id=chat_id)
         await state.set_state(TestStates.waiting_for_message)
