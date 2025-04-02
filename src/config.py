@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT_MESSAGES: int = 5
     
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///vailentin.db"
+    DATABASE_URL: str = "sqlite+aiosqlite:///valentin.db"
     
     # Chat types
     CHAT_TYPES: List[str] = ["work", "friendly", "mixed"]

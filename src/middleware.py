@@ -2,8 +2,11 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
 from typing import Callable, Dict, Any, Awaitable, Union
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging
 
 from .database.database import get_session
+
+logger = logging.getLogger(__name__)
 
 class DatabaseMiddleware(BaseMiddleware):
     async def __call__(
@@ -19,7 +22,11 @@ class DatabaseMiddleware(BaseMiddleware):
                 await session.commit()
                 return result
             except Exception as e:
+                logger.error(f"Error in middleware: {str(e)}")
                 await session.rollback()
                 raise e
             finally:
-                await session.close() 
+                try:
+                    await session.close()
+                except Exception as e:
+                    logger.error(f"Error closing session: {str(e)}") 
