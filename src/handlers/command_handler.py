@@ -63,7 +63,7 @@ async def status_command(message: Message, session: AsyncSession):
     await message.answer(status_text, parse_mode=None)
 
 @router.message(Command("shutdown"))
-async def shutdown_command(message: Message, db: AsyncSession):
+async def shutdown_command(message: Message, session: AsyncSession):
     """Toggle global shutdown mode."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -73,13 +73,13 @@ async def shutdown_command(message: Message, db: AsyncSession):
     await message.answer(f"Global shutdown mode is now {status}")
 
 @router.message(Command("setmode"))
-async def setmode_command(message: Message, db: AsyncSession):
+async def setmode_command(message: Message, session: AsyncSession):
     """Enable/disable bot in chats."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     # Get all chats
-    chats = await db.execute(select(Chat))
+    chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
     keyboard = []
@@ -98,17 +98,17 @@ async def setmode_command(message: Message, db: AsyncSession):
     )
 
 @router.callback_query(F.data.startswith("toggle_chat_"))
-async def toggle_chat(callback: CallbackQuery, db: AsyncSession):
+async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
     """Toggle chat active status."""
     if callback.from_user.id != settings.OWNER_ID:
         return
     
     chat_id = int(callback.data.split("_")[2])
-    chat = await db.get(Chat, chat_id)
+    chat = await session.get(Chat, chat_id)
     
     if chat:
         chat.is_active = not chat.is_active
-        await db.commit()
+        await session.commit()
         
         status = "✅" if chat.is_active else "❌"
         await callback.message.edit_text(
@@ -117,7 +117,7 @@ async def toggle_chat(callback: CallbackQuery, db: AsyncSession):
         )
 
 @router.message(Command("set_probability"))
-async def set_probability_command(message: Message, db: AsyncSession):
+async def set_probability_command(message: Message, session: AsyncSession):
     """Set response probability for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -131,10 +131,10 @@ async def set_probability_command(message: Message, db: AsyncSession):
             await message.answer("❌ Probability must be between 0 and 1")
             return
             
-        chat = await db.get(Chat, chat_id)
+        chat = await session.get(Chat, chat_id)
         if chat:
             chat.response_probability = probability
-            await db.commit()
+            await session.commit()
             await message.answer(f"✅ Response probability set to {probability} for chat {chat.title}")
         else:
             await message.answer("❌ Chat not found")
@@ -142,7 +142,7 @@ async def set_probability_command(message: Message, db: AsyncSession):
         await message.answer("❌ Usage: /set_probability <chat_id> <probability>")
 
 @router.message(Command("set_importance"))
-async def set_importance_command(message: Message, db: AsyncSession):
+async def set_importance_command(message: Message, session: AsyncSession):
     """Set importance threshold for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -156,10 +156,10 @@ async def set_importance_command(message: Message, db: AsyncSession):
             await message.answer("❌ Threshold must be between 0 and 1")
             return
             
-        chat = await db.get(Chat, chat_id)
+        chat = await session.get(Chat, chat_id)
         if chat:
             chat.importance_threshold = threshold
-            await db.commit()
+            await session.commit()
             await message.answer(f"✅ Importance threshold set to {threshold} for chat {chat.title}")
         else:
             await message.answer("❌ Chat not found")
@@ -167,7 +167,7 @@ async def set_importance_command(message: Message, db: AsyncSession):
         await message.answer("❌ Usage: /set_importance <chat_id> <threshold>")
 
 @router.message(Command("smart_mode"))
-async def smart_mode_command(message: Message, db: AsyncSession):
+async def smart_mode_command(message: Message, session: AsyncSession):
     """Toggle smart mode for chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -177,10 +177,10 @@ async def smart_mode_command(message: Message, db: AsyncSession):
         chat_id = int(chat_id)
         mode = mode.lower() == "on"
         
-        chat = await db.get(Chat, chat_id)
+        chat = await session.get(Chat, chat_id)
         if chat:
             chat.smart_mode = mode
-            await db.commit()
+            await session.commit()
             await message.answer(f"✅ Smart mode {'enabled' if mode else 'disabled'} for chat {chat.title}")
         else:
             await message.answer("❌ Chat not found")
@@ -188,12 +188,12 @@ async def smart_mode_command(message: Message, db: AsyncSession):
         await message.answer("❌ Usage: /smart_mode <chat_id> <on/off>")
 
 @router.message(Command("list_chats"))
-async def list_chats_command(message: Message, db: AsyncSession):
+async def list_chats_command(message: Message, session: AsyncSession):
     """List all chats."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    chats = await db.execute(select(Chat))
+    chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
     if not chats:
@@ -211,21 +211,21 @@ async def list_chats_command(message: Message, db: AsyncSession):
     await message.answer(text, parse_mode=None)
 
 @router.message(Command("summ"))
-async def summarize_chat_command(message: Message, db: AsyncSession):
+async def summarize_chat_command(message: Message, session: AsyncSession):
     """Generate chat summary."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     try:
         chat_id = int(message.text.split()[1])
-        chat = await db.get(Chat, chat_id)
+        chat = await session.get(Chat, chat_id)
         if not chat:
             await message.answer("❌ Chat not found")
             return
             
         # Get messages from the last week
         week_ago = datetime.now() - timedelta(days=7)
-        messages = await db.execute(
+        messages = await session.execute(
             select(Message)
             .where(Message.chat_id == chat_id)
             .where(Message.timestamp >= week_ago)
@@ -238,7 +238,7 @@ async def summarize_chat_command(message: Message, db: AsyncSession):
             return
             
         # Generate summary
-        context_service = ContextService(db)
+        context_service = ContextService(session)
         summary = await context_service.generate_chat_summary(messages)
         
         await message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
@@ -246,14 +246,14 @@ async def summarize_chat_command(message: Message, db: AsyncSession):
         await message.answer("❌ Usage: /summ <chat_id>")
 
 @router.message(Command("upload"))
-async def upload_command(message: Message, db: AsyncSession):
+async def upload_command(message: Message, session: AsyncSession):
     """Upload new training data."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     # Get messages from the last month
     month_ago = datetime.now() - timedelta(days=30)
-    messages = await db.execute(
+    messages = await session.execute(
         select(Message)
         .where(Message.timestamp >= month_ago)
         .order_by(Message.timestamp)
@@ -277,13 +277,13 @@ async def upload_command(message: Message, db: AsyncSession):
     await message.answer(f"✅ Style guide updated:\n\n{new_style}")
 
 @router.message(Command("refresh"))
-async def refresh_command(message: Message, db: AsyncSession):
+async def refresh_command(message: Message, session: AsyncSession):
     """Refresh style guide."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     # Get all messages
-    messages = await db.execute(select(Message).order_by(Message.timestamp))
+    messages = await session.execute(select(Message).order_by(Message.timestamp))
     messages = messages.scalars().all()
     
     if not messages:
@@ -303,7 +303,7 @@ async def refresh_command(message: Message, db: AsyncSession):
     await message.answer(f"✅ Style guide refreshed:\n\n{new_style}")
 
 @router.message(Command("test"))
-async def test_command(message: Message, db: AsyncSession):
+async def test_command(message: Message, session: AsyncSession):
     """Test bot response."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -328,7 +328,7 @@ async def test_command(message: Message, db: AsyncSession):
         await message.answer(f"❌ Error: {str(e)}")
 
 @router.message(Command("tag"))
-async def tag_command(message: Message, command: CommandObject, db: AsyncSession):
+async def tag_command(message: Message, command: CommandObject, session: AsyncSession):
     """Handle tag-related commands."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -347,13 +347,13 @@ async def tag_command(message: Message, command: CommandObject, db: AsyncSession
     if not args:
         return
 
-    context_service = ContextService(db)
+    context_service = ContextService(session)
     action = args[0].lower()
 
     if action == "stats":
         # Get tag statistics
         query = select(MessageTag).join(Tag)
-        result = await db.execute(query)
+        result = await session.execute(query)
         tags = result.scalars().all()
 
         tag_stats = {}
@@ -387,7 +387,7 @@ async def tag_command(message: Message, command: CommandObject, db: AsyncSession
         Message.chat_id == message.chat.id,
         Message.message_id == target_msg_id
     )
-    result = await db.execute(query)
+    result = await session.execute(query)
     target_msg = result.scalar_one_or_none()
 
     if not target_msg:
@@ -419,8 +419,8 @@ async def tag_command(message: Message, command: CommandObject, db: AsyncSession
         # Find and remove tag
         for mt in target_msg.tags:
             if mt.tag.name == tag_name:
-                await db.delete(mt)
-                await db.commit()
+                await session.delete(mt)
+                await session.commit()
                 await message.answer(f"Removed tag #{tag_name} from message {target_msg_id}")
                 return
         await message.answer(f"Tag #{tag_name} not found on message {target_msg_id}")
@@ -429,7 +429,7 @@ async def tag_command(message: Message, command: CommandObject, db: AsyncSession
         await message.answer("Invalid command format")
 
 @router.message(Command("thread"))
-async def thread_command(message: Message, command: CommandObject, db: AsyncSession):
+async def thread_command(message: Message, command: CommandObject, session: AsyncSession):
     """Handle thread-related commands."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
@@ -444,7 +444,7 @@ async def thread_command(message: Message, command: CommandObject, db: AsyncSess
         )
         return
 
-    context_service = ContextService(db)
+    context_service = ContextService(session)
     args = command.args.split()
     action = args[0].lower()
 
@@ -454,7 +454,7 @@ async def thread_command(message: Message, command: CommandObject, db: AsyncSess
             MessageThread.chat_id == message.chat.id,
             MessageThread.is_active == True
         )
-        result = await db.execute(query)
+        result = await session.execute(query)
         threads = result.scalars().all()
 
         if not threads:
@@ -483,7 +483,7 @@ async def thread_command(message: Message, command: CommandObject, db: AsyncSess
         
         # Get thread context
         query = select(MessageContext).where(MessageContext.thread_id == thread.id)
-        result = await db.execute(query)
+        result = await session.execute(query)
         context = result.scalar_one_or_none()
 
         if not context:
@@ -526,20 +526,20 @@ async def thread_command(message: Message, command: CommandObject, db: AsyncSess
         # Close current thread
         thread = await context_service.get_or_create_thread(message.chat.id)
         thread.is_active = False
-        await db.commit()
+        await session.commit()
         await message.answer(f"Closed thread: {thread.topic}")
 
     else:
         await message.answer("Invalid command format")
 
 @router.message(Command("set_style"))
-async def set_style_command(message: Message, db: AsyncSession):
+async def set_style_command(message: Message, session: AsyncSession):
     """Set chat style."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     # Get all chats
-    chats = await db.execute(select(Chat))
+    chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
     keyboard = []
@@ -557,7 +557,7 @@ async def set_style_command(message: Message, db: AsyncSession):
     )
 
 @router.callback_query(F.data.startswith("select_chat_"))
-async def select_chat_for_style(callback: CallbackQuery, db: AsyncSession):
+async def select_chat_for_style(callback: CallbackQuery, session: AsyncSession):
     """Select chat for style setting."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -590,7 +590,7 @@ async def select_chat_for_style(callback: CallbackQuery, db: AsyncSession):
     )
 
 @router.callback_query(F.data.startswith("set_style_"))
-async def set_chat_style(callback: CallbackQuery, db: AsyncSession):
+async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
     """Set chat style."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -599,10 +599,10 @@ async def set_chat_style(callback: CallbackQuery, db: AsyncSession):
     chat_id = int(chat_id)
     
     # Update chat style
-    chat = await db.get(Chat, chat_id)
+    chat = await session.get(Chat, chat_id)
     if chat:
         chat.chat_type = ChatType(style)
-        await db.commit()
+        await session.commit()
         
         await callback.message.edit_text(
             f"Style for {chat.title} set to {style}",
@@ -610,13 +610,13 @@ async def set_chat_style(callback: CallbackQuery, db: AsyncSession):
         )
 
 @router.message(Command("set_threshold"))
-async def set_threshold_command(message: Message, db: AsyncSession):
+async def set_threshold_command(message: Message, session: AsyncSession):
     """Set importance threshold."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     # Get all chats
-    chats = await db.execute(select(Chat))
+    chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
     keyboard = []
@@ -634,7 +634,7 @@ async def set_threshold_command(message: Message, db: AsyncSession):
     )
 
 @router.callback_query(F.data.startswith("select_chat_threshold_"))
-async def select_chat_for_threshold(callback: CallbackQuery, db: AsyncSession):
+async def select_chat_for_threshold(callback: CallbackQuery, session: AsyncSession):
     """Select chat for threshold setting."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -666,7 +666,7 @@ async def select_chat_for_threshold(callback: CallbackQuery, db: AsyncSession):
     )
 
 @router.callback_query(F.data.startswith("set_threshold_"))
-async def set_chat_threshold(callback: CallbackQuery, db: AsyncSession):
+async def set_chat_threshold(callback: CallbackQuery, session: AsyncSession):
     """Set chat threshold."""
     if callback.from_user.id != settings.OWNER_ID:
         return
@@ -676,10 +676,10 @@ async def set_chat_threshold(callback: CallbackQuery, db: AsyncSession):
     threshold = float(threshold)
     
     # Update chat threshold
-    chat = await db.get(Chat, chat_id)
+    chat = await session.get(Chat, chat_id)
     if chat:
         chat.importance_threshold = threshold
-        await db.commit()
+        await session.commit()
         
         await callback.message.edit_text(
             f"Importance threshold for {chat.title} set to {threshold:.2f}",
