@@ -748,4 +748,188 @@ async def thread_command(message: Message, command: CommandObject, session: Asyn
         await message.answer(f"Closed thread: {thread.topic}")
 
     else:
-        await message.answer("Invalid command format") 
+        await message.answer("Invalid command format")
+
+@router.message(Command("list_chats"))
+async def list_chats_command(message: Message, session: AsyncSession):
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return
+    
+    # Get all chats
+    chat_query = select(Chat)
+    result = await session.execute(chat_query)
+    chats = result.scalars().all()
+    
+    if not chats:
+        await message.answer("No chats found in the database.")
+        return
+    
+    list_text = "📱 List of Chats:\n\n"
+    for chat in chats:
+        list_text += f"• {chat.title}:\n"
+        list_text += f"  - ID: {chat.chat_id}\n"
+        list_text += f"  - Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
+        list_text += f"  - Active: {'✅' if chat.is_active else '❌'}\n"
+        list_text += f"  - Probability: {chat.response_probability:.2%}\n"
+        list_text += f"  - Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
+        if chat.smart_mode:
+            list_text += f"  - Importance Threshold: {chat.importance_threshold:.2f}\n"
+        list_text += "\n"
+    
+    await message.answer(list_text, parse_mode=None)
+
+@router.message(Command("summ"))
+async def summ_command(message: Message, session: AsyncSession):
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return
+    
+    # Get all chats
+    chat_query = select(Chat)
+    result = await session.execute(chat_query)
+    chats = result.scalars().all()
+    
+    if not chats:
+        await message.answer("No chats found in the database.")
+        return
+    
+    # Create keyboard with chat buttons
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📱 {chat.title}",
+                callback_data=f"summarize_chat_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to generate summary:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("summarize_chat_"))
+async def summarize_chat_callback(callback: CallbackQuery, session: AsyncSession):
+    if not is_owner(callback.from_user.id):
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    chat_query = select(Chat).where(Chat.id == chat_id)
+    result = await session.execute(chat_query)
+    chat = result.scalar_one_or_none()
+    
+    if not chat:
+        await callback.message.edit_text("Chat not found.")
+        return
+    
+    # Get messages from the last week
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    messages_query = select(Message).where(
+        Message.chat_id == chat.id,
+        Message.timestamp >= week_ago
+    ).order_by(Message.timestamp)
+    
+    result = await session.execute(messages_query)
+    messages = result.scalars().all()
+    
+    if not messages:
+        await callback.message.edit_text(f"No messages found in {chat.title} for the last week.")
+        return
+    
+    # Generate summary using OpenAI
+    context_service = ContextService(session)
+    summary = await context_service.generate_chat_summary(messages)
+    
+    await callback.message.edit_text(
+        f"📊 Summary for {chat.title} (last 7 days):\n\n{summary}",
+        reply_markup=None
+    )
+
+@router.message(Command("upload"))
+async def upload_command(message: Message, session: AsyncSession):
+    if not is_owner(message.from_user.id) or message.chat.type != "private":
+        return
+    
+    # Get all chats
+    chat_query = select(Chat)
+    result = await session.execute(chat_query)
+    chats = result.scalars().all()
+    
+    if not chats:
+        await message.answer("No chats found in the database.")
+        return
+    
+    # Create keyboard with chat buttons
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📱 {chat.title}",
+                callback_data=f"upload_chat_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to upload messages for training:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(F.data.startswith("upload_chat_"))
+async def upload_chat_callback(callback: CallbackQuery, session: AsyncSession):
+    if not is_owner(callback.from_user.id):
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    chat_query = select(Chat).where(Chat.id == chat_id)
+    result = await session.execute(chat_query)
+    chat = result.scalar_one_or_none()
+    
+    if not chat:
+        await callback.message.edit_text("Chat not found.")
+        return
+    
+    # Get messages from the last month
+    month_ago = datetime.utcnow() - timedelta(days=30)
+    messages_query = select(Message).where(
+        Message.chat_id == chat.id,
+        Message.timestamp >= month_ago
+    ).order_by(Message.timestamp)
+    
+    result = await session.execute(messages_query)
+    messages = result.scalars().all()
+    
+    if not messages:
+        await callback.message.edit_text(f"No messages found in {chat.title} for the last month.")
+        return
+    
+    # Prepare training data
+    training_data = []
+    for msg in messages:
+        if msg.was_responded:
+            training_data.append({
+                "input": msg.text,
+                "output": "Message was responded to"
+            })
+        else:
+            training_data.append({
+                "input": msg.text,
+                "output": "Message was not responded to"
+            })
+    
+    # Update style with training data
+    style_query = select(Style).where(Style.chat_type == chat.chat_type)
+    result = await session.execute(style_query)
+    style = result.scalar_one_or_none()
+    
+    if style:
+        style.training_data = training_data
+        style.last_updated = datetime.utcnow()
+        await session.commit()
+        await callback.message.edit_text(
+            f"✅ Successfully uploaded {len(training_data)} messages from {chat.title} for training.",
+            reply_markup=None
+        )
+    else:
+        await callback.message.edit_text(
+            f"❌ No style found for chat type {chat.chat_type.value}",
+            reply_markup=None
+        ) 
