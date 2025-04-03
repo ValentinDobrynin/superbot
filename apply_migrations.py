@@ -14,6 +14,13 @@ def main():
     
     print("Applying database migrations...")
     
+    # Set environment variables for database connection
+    os.environ['POSTGRES_USER'] = os.getenv('POSTGRES_USER', 'postgres')
+    os.environ['POSTGRES_PASSWORD'] = os.getenv('POSTGRES_PASSWORD', '')
+    os.environ['POSTGRES_HOST'] = os.getenv('POSTGRES_HOST', 'localhost')
+    os.environ['POSTGRES_PORT'] = os.getenv('POSTGRES_PORT', '5432')
+    os.environ['POSTGRES_DB'] = os.getenv('POSTGRES_DB', 'postgres')
+    
     try:
         # Run alembic upgrade
         result = subprocess.run(
