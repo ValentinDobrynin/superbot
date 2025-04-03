@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.sql import func
 from datetime import datetime, timedelta
 import logging
+import re
 
 from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
@@ -59,6 +60,11 @@ class TestStates(StatesGroup):
     waiting_for_message = State()
     waiting_for_probability = State()
     waiting_for_importance = State()
+    waiting_for_hours = State()
+
+class UploadState(StatesGroup):
+    waiting_for_dump = State()
+    waiting_for_type = State()
 
 def is_owner(user_id: int) -> bool:
     return user_id == settings.OWNER_ID
@@ -75,15 +81,16 @@ async def help_command(message: Message, session: AsyncSession):
 /help - Show this help message
 /status - Show bot status and statistics
 /list_chats - List all chats with settings
-/summ <chat_id> - Generate chat summary
+
+📈 Analytics:
+/summ - Generate chat summary
 
 ⚙️ Chat Settings:
-/setmode - Enable/disable bot in chats
+/setmode - Toggle silent mode in chats (bot reads but doesn't respond)
 /set_style - Set chat style (work/friendly/mixed)
 /set_probability - Set response probability
 /set_importance - Set importance threshold
 /smart_mode - Toggle smart mode
-/silent - Toggle silent mode (read-only)
 
 🔄 Training & Style:
 /upload - Upload new training data
@@ -306,35 +313,6 @@ async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
     else:
         await callback.answer("Chat not found", show_alert=True)
 
-@router.message(Command("silent"))
-async def silent_command(message: Message, session: AsyncSession):
-    """Enable/disable silent mode in chats (bot reads but doesn't respond)."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
-    
-    keyboard = []
-    for chat in chats:
-        status = "🤫" if chat.is_silent else "🗣"
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{status} {chat.title}",
-                callback_data=f"toggle_silent_{chat.id}"
-            )
-        ])
-    
-    await message.answer(
-        "Select chat to toggle silent mode (🤫 = reads but doesn't respond):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
 @router.callback_query(F.data.startswith("toggle_chat_"))
 async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
     """Toggle chat active status (complete shutdown)."""
@@ -354,30 +332,6 @@ async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
         status = "✅" if chat.is_active else "❌"
         await callback.message.edit_text(
             f"Chat {chat.title} is now {'active' if chat.is_active else 'completely disabled'}",
-            reply_markup=callback.message.reply_markup
-        )
-
-@router.callback_query(F.data.startswith("toggle_silent_"))
-async def toggle_silent(callback: CallbackQuery, session: AsyncSession):
-    """Toggle chat silent mode (reads but doesn't respond)."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    chat_id = int(callback.data.split("_")[2])
-    chat = await session.get(Chat, chat_id)
-    
-    if chat:
-        # Can't enable silent mode if chat is completely disabled
-        if not chat.is_active:
-            await callback.answer("❌ Cannot enable silent mode for disabled chat")
-            return
-            
-        chat.is_silent = not chat.is_silent
-        await session.commit()
-        
-        status = "🤫" if chat.is_silent else "🗣"
-        await callback.message.edit_text(
-            f"Chat {chat.title} is now in {'silent' if chat.is_silent else 'active'} mode",
             reply_markup=callback.message.reply_markup
         )
 
@@ -752,68 +706,318 @@ async def summarize_chat_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    try:
-        chat_id = int(message.text.split()[1])
-        chat = await session.get(Chat, chat_id)
-        if not chat:
-            await message.answer("❌ Chat not found")
-            return
-            
-        # Update chat title
-        await update_chat_title(message, chat_id, session)
-            
-        # Get messages from the last week
-        week_ago = datetime.now() - timedelta(days=7)
-        messages = await session.execute(
-            select(Message)
-            .where(Message.chat_id == chat_id)
-            .where(Message.timestamp >= week_ago)
-            .order_by(Message.timestamp)
-        )
-        messages = messages.scalars().all()
-        
-        if not messages:
-            await message.answer("❌ No messages found in the last week")
-            return
-            
-        # Generate summary
-        context_service = ContextService(session)
-        summary = await context_service.generate_chat_summary(messages)
-        
-        await message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
-    except (IndexError, ValueError):
-        await message.answer("❌ Usage: /summ <chat_id>")
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📊 {chat.title}",
+                callback_data=f"summ_chat_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to generate summary:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
-@router.message(Command("upload"))
-async def upload_command(message: Message, session: AsyncSession):
-    """Upload new training data."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+@router.callback_query(lambda c: c.data.startswith("summ_chat_"))
+async def select_summary_period(callback: CallbackQuery, session: AsyncSession):
+    """Select summary period."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can generate summaries", show_alert=True)
         return
     
-    # Get messages from the last month
-    month_ago = datetime.now() - timedelta(days=30)
+    chat_id = int(callback.data.split("_")[2])
+    chat = await session.get(Chat, chat_id)
+    
+    if not chat:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+    
+    # Create period selection keyboard
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="🔄 Since last summary",
+                callback_data=f"summ_period_{chat_id}_last"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📅 Last 24 hours",
+                callback_data=f"summ_period_{chat_id}_24h"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="⏰ Custom hours",
+                callback_data=f"summ_period_{chat_id}_custom"
+            )
+        ]
+    ]
+    
+    await callback.message.edit_text(
+        f"Select summary period for {chat.title}:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(lambda c: c.data.startswith("summ_period_"))
+async def generate_summary(callback: CallbackQuery, session: AsyncSession):
+    """Generate summary for selected period."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can generate summaries", show_alert=True)
+        return
+    
+    _, _, chat_id, period_type = callback.data.split("_")
+    chat_id = int(chat_id)
+    chat = await session.get(Chat, chat_id)
+    
+    if not chat:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+    
+    # Update chat title
+    await update_chat_title(callback.message, chat_id, session)
+    
+    # Get messages based on period type
+    now = datetime.now()
+    if period_type == "last":
+        # Use last summary timestamp if available, otherwise use 24h
+        start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
+    elif period_type == "24h":
+        start_time = now - timedelta(days=1)
+    elif period_type == "custom":
+        # Store chat_id in state for custom hours input
+        await state.set_state(TestStates.waiting_for_hours)
+        await state.update_data(chat_id=chat_id)
+        await callback.message.edit_text(
+            "Enter number of hours for summary:",
+            reply_markup=None
+        )
+        return
+    
     messages = await session.execute(
         select(Message)
-        .where(Message.timestamp >= month_ago)
+        .where(Message.chat_id == chat_id)
+        .where(Message.timestamp >= start_time)
         .order_by(Message.timestamp)
     )
     messages = messages.scalars().all()
     
     if not messages:
-        await message.answer("❌ No messages found in the last month")
+        await callback.answer("No messages found for selected period", show_alert=True)
         return
+    
+    # Generate summary
+    context_service = ContextService(session)
+    summary = await context_service.generate_chat_summary(messages)
+    
+    # Update last summary timestamp
+    chat.last_summary_timestamp = now
+    await session.commit()
+    
+    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
+
+@router.message(TestStates.waiting_for_hours)
+async def process_custom_hours(message: Message, state: FSMContext, session: AsyncSession):
+    """Process custom hours input for summary."""
+    if message.from_user.id != settings.OWNER_ID:
+        return
+    
+    try:
+        hours = float(message.text)
+        if hours <= 0:
+            await message.answer("❌ Hours must be positive")
+            await state.clear()
+            return
+            
+        data = await state.get_data()
+        chat_id = data.get("chat_id")
         
-    # Format messages for training
-    conversation_text = "\n".join([
-        f"{'User' if msg.user_id != settings.OWNER_ID else 'Valentin'}: {msg.text}"
-        for msg in messages
+        chat = await session.get(Chat, chat_id)
+        if not chat:
+            await message.answer("❌ Chat not found")
+            await state.clear()
+            return
+        
+        # Update chat title
+        await update_chat_title(message, chat_id, session)
+        
+        # Get messages for specified hours
+        start_time = datetime.now() - timedelta(hours=hours)
+        messages = await session.execute(
+            select(Message)
+            .where(Message.chat_id == chat_id)
+            .where(Message.timestamp >= start_time)
+            .order_by(Message.timestamp)
+        )
+        messages = messages.scalars().all()
+        
+        if not messages:
+            await message.answer("❌ No messages found for selected period")
+            await state.clear()
+            return
+        
+        # Generate summary
+        context_service = ContextService(session)
+        summary = await context_service.generate_chat_summary(messages)
+        
+        # Update last summary timestamp
+        chat.last_summary_timestamp = datetime.now()
+        await session.commit()
+        
+        await message.answer(f"📊 Summary for {chat.title} (last {hours:.1f} hours):\n\n{summary}")
+    except ValueError:
+        await message.answer("❌ Please enter a valid number")
+    
+    await state.clear()
+
+@router.message(Command("upload"))
+async def upload_command(message: Message, session: AsyncSession):
+    """Handle chat dump upload for style training."""
+    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+        return
+    
+    # Create keyboard for chat type selection
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👔 Рабочий", callback_data="upload_work"),
+            InlineKeyboardButton(text="😊 Дружеский", callback_data="upload_friendly")
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Смешанный", callback_data="upload_mixed")
+        ]
     ])
     
-    # Refresh style
-    openai_service = OpenAIService()
-    new_style = await openai_service.refresh_style(conversation_text)
+    await message.answer(
+        "📝 Загрузите дамп переписки одним из способов:\n\n"
+        "1️⃣ Отправьте текстовое сообщение в формате:\n"
+        "[Дата] Имя пользователя: Сообщение\n"
+        "[Дата] Имя пользователя: Сообщение\n\n"
+        "2️⃣ Отправьте файл:\n"
+        "- Текстовый файл (.txt) с дампом переписки\n"
+        "- JSON-файл с экспортом переписки из Telegram\n\n"
+        "Пример текстового формата:\n"
+        "[2024-01-15 14:30] Valentin: Привет, как дела?\n"
+        "[2024-01-15 14:31] John: Все хорошо, спасибо!\n\n"
+        "Выберите тип переписки:",
+        reply_markup=keyboard
+    )
+
+@router.callback_query(lambda c: c.data.startswith("upload_"))
+async def process_upload_type(callback: CallbackQuery, state: FSMContext):
+    """Process chat type selection for upload."""
+    chat_type = callback.data.split("_")[1]
+    await state.update_data(chat_type=chat_type)
+    await state.set_state(UploadState.waiting_for_dump)
+    await callback.message.edit_text(
+        "📤 Теперь отправьте дамп переписки текстовым сообщением или файлом.\n"
+        "Поддерживаемые форматы: .txt, .json\n"
+        "Убедитесь, что формат соответствует примеру."
+    )
+
+@router.message(UploadState.waiting_for_dump)
+async def process_dump_upload(message: Message, state: FSMContext, session: AsyncSession):
+    """Process chat dump upload and update style."""
+    data = await state.get_data()
+    chat_type = data.get("chat_type")
     
-    await message.answer(f"✅ Style guide updated:\n\n{new_style}")
+    try:
+        # Get text content from message or file
+        if message.document:
+            # Download file
+            file = await message.bot.get_file(message.document.file_id)
+            file_path = await message.bot.download_file(file.file_path)
+            file_content = file_path.read().decode('utf-8')
+            
+            if message.document.mime_type == "application/json":
+                # Parse JSON
+                import json
+                json_data = json.loads(file_content)
+                conversation_text = []
+                
+                # Handle different JSON formats
+                if isinstance(json_data, list):
+                    # Telegram export format
+                    for msg in json_data:
+                        if 'text' in msg and 'from' in msg:
+                            username = msg['from'].get('first_name', 'Unknown')
+                            if username.lower() == message.from_user.first_name.lower():
+                                username = "Valentin"
+                            conversation_text.append(f"{username}: {msg['text']}")
+                else:
+                    # Custom JSON format
+                    for msg in json_data.get('messages', []):
+                        if 'text' in msg and 'from' in msg:
+                            username = msg['from'].get('name', 'Unknown')
+                            if username.lower() == message.from_user.first_name.lower():
+                                username = "Valentin"
+                            conversation_text.append(f"{username}: {msg['text']}")
+                
+                text_content = "\n".join(conversation_text)
+            else:
+                # Text file
+                text_content = file_content
+        else:
+            # Text message
+            text_content = message.text
+        
+        if not text_content:
+            await message.answer("❌ Не удалось получить содержимое дампа. Проверьте формат.")
+            return
+        
+        # Parse the dump
+        lines = text_content.split("\n")
+        conversation_text = []
+        
+        for line in lines:
+            if not line.strip():
+                continue
+                
+            # Extract message content
+            match = re.match(r'\[(.*?)\] (.*?): (.*)', line)
+            if match:
+                timestamp, username, text = match.groups()
+                # Replace owner's name with "Valentin" for consistency
+                if username.lower() == message.from_user.first_name.lower():
+                    username = "Valentin"
+                conversation_text.append(f"{username}: {text}")
+            else:
+                # Handle non-formatted lines (from JSON)
+                conversation_text.append(line)
+        
+        if not conversation_text:
+            await message.answer("❌ Не удалось извлечь сообщения из дампа. Проверьте формат.")
+            return
+        
+        # Format for training
+        formatted_text = "\n".join(conversation_text)
+        
+        # Update style
+        openai_service = OpenAIService()
+        new_style = await openai_service.refresh_style(formatted_text, chat_type=chat_type)
+        
+        await message.answer(
+            f"✅ Стиль успешно обновлен для типа '{chat_type}':\n\n"
+            f"{new_style}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing dump: {e}", exc_info=True)
+        await message.answer(
+            "❌ Произошла ошибка при обработке дампа. "
+            "Проверьте формат и попробуйте снова."
+        )
+    
+    await state.clear()
 
 @router.message(Command("refresh"))
 async def refresh_command(message: Message, session: AsyncSession):
@@ -842,69 +1046,66 @@ async def refresh_command(message: Message, session: AsyncSession):
     await message.answer(f"✅ Style guide refreshed:\n\n{new_style}")
 
 @router.message(Command("test"))
-async def test_command(message: Message, state: FSMContext):
-    """Test bot response to a message."""
+async def test_command(message: Message, session: AsyncSession):
+    """Test bot functionality in a specific chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    await state.set_state(TestStates.waiting_for_chat)
-    await message.answer("Please enter the chat ID to test:")
+    # Get all chats
+    chats = await session.execute(select(Chat))
+    chats = chats.scalars().all()
+    
+    # Update chat titles
+    for chat in chats:
+        await update_chat_title(message, chat.chat_id, session)
+    
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📱 {chat.title}",
+                callback_data=f"test_chat_{chat.id}"
+            )
+        ])
+    
+    await message.answer(
+        "Select chat to test bot functionality:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
-@router.message(TestStates.waiting_for_chat)
-async def process_test_chat(message: Message, state: FSMContext, session: AsyncSession):
-    """Process chat ID for test."""
-    if message.from_user.id != settings.OWNER_ID:
+@router.callback_query(lambda c: c.data.startswith("test_chat_"))
+async def process_test_chat(callback: CallbackQuery, session: AsyncSession):
+    """Process test chat selection."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can test bot functionality", show_alert=True)
         return
     
-    try:
-        chat_id = int(message.text)
-        chat = await session.get(Chat, chat_id)
-        if not chat:
-            await message.answer("❌ Chat not found in database", parse_mode=None)
-            await state.clear()
-            return
-        
-        # Update chat title from Telegram
-        await update_chat_title(message, chat_id, session)
-        
-        await state.update_data(chat_id=chat_id)
-        await state.set_state(TestStates.waiting_for_message)
-        await message.answer("Please send a test message:")
-    except ValueError:
-        await message.answer("❌ Please enter a valid chat ID", parse_mode=None)
-        await state.clear()
-
-@router.message(TestStates.waiting_for_message)
-async def process_test_message(message: Message, state: FSMContext, session: AsyncSession):
-    """Process test message and generate response."""
-    if message.from_user.id != settings.OWNER_ID:
-        return
-    
-    # Get chat ID from state
-    data = await state.get_data()
-    chat_id = data.get("chat_id")
-    
-    # Get chat
+    chat_id = int(callback.data.split("_")[2])
     chat = await session.get(Chat, chat_id)
-    if not chat:
-        await message.answer("❌ Chat not found in database", parse_mode=None)
-        await state.clear()
-        return
     
-    # Generate response
-    try:
-        openai_service = OpenAIService()
-        response = await openai_service.generate_response(
-            message.text,
-            chat.chat_type,
-            chat.smart_mode,
-            chat.importance_threshold
+    if chat:
+        # Get chat info from Telegram
+        try:
+            chat_info = await callback.bot.get_chat(chat_id)
+            title = chat_info.title
+        except Exception as e:
+            logger.error(f"Failed to get chat info: {e}", exc_info=True)
+            title = chat.title or "Unknown Chat"
+        
+        # Update chat title if needed
+        if title != chat.title:
+            chat.title = title
+            await session.commit()
+        
+        # Send test message
+        await callback.bot.send_message(
+            chat_id=chat_id,
+            text="🤖 Test message from bot"
         )
-        await message.answer(f"🤖 Test Response:\n\n{response}", parse_mode=None)
-    except Exception as e:
-        await message.answer(f"❌ Error generating response: {str(e)}", parse_mode=None)
-    
-    await state.clear()
+        
+        await callback.answer(f"Test message sent to {chat.title}")
+    else:
+        await callback.answer("Chat not found", show_alert=True)
 
 @router.message(Command("tag"))
 async def tag_command(message: Message, command: CommandObject, session: AsyncSession):
@@ -1186,4 +1387,39 @@ async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
         await callback.message.edit_text(
             f"Style for {chat.title} set to {style}",
             reply_markup=None
-        ) 
+        )
+
+@router.callback_query(F.data.startswith("summ_chat_"))
+async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
+    """Generate chat summary."""
+    if callback.from_user.id != settings.OWNER_ID:
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        await callback.answer("❌ Chat not found")
+        return
+    
+    # Update chat title
+    await update_chat_title(callback.message, chat_id, session)
+    
+    # Get messages from the last week
+    week_ago = datetime.now() - timedelta(days=7)
+    messages = await session.execute(
+        select(Message)
+        .where(Message.chat_id == chat_id)
+        .where(Message.timestamp >= week_ago)
+        .order_by(Message.timestamp)
+    )
+    messages = messages.scalars().all()
+    
+    if not messages:
+        await callback.answer("❌ No messages found in the last week")
+        return
+    
+    # Generate summary
+    context_service = ContextService(session)
+    summary = await context_service.generate_chat_summary(messages)
+    
+    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}") 

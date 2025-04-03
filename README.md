@@ -6,8 +6,7 @@ Telegram бот с расширенными возможностями упра�
 
 ### Управление режимами работы
 - **Глобальный режим** (`/shutdown`) - управление работой бота во всех чатах
-- **Режим чата** (`/setmode`) - полное отключение бота в конкретном чате
-- **Тихий режим** (`/silent`) - бот читает сообщения, но не отвечает
+- **Режим чата** (`/setmode`) - включение/выключение бота в конкретном чате
 - **Умный режим** (`/smart_mode`) - адаптивные ответы на основе важности сообщений
 
 ### Аналитика и статистика
@@ -32,14 +31,9 @@ Telegram бот с расширенными возможностями упра�
 - 🟢 Выключен: бот работает в обычном режиме
 
 #### `/setmode`
-Полное отключение бота в конкретном чате:
-- ❌ Отключен: бот не читает и не отвечает
-- ✅ Включен: бот работает в обычном режиме
-
-#### `/silent`
-Управление тихим режимом в чате:
-- 🤫 Тихий режим: бот читает сообщения, но не отвечает
-- 🗣 Обычный режим: бот работает в обычном режиме
+Управление режимом работы в конкретном чате:
+- 🔇 Тихий режим: бот читает сообщения, но не отвечает
+- 🔊 Обычный режим: бот работает в обычном режиме
 
 #### `/smart_mode`
 Управление умным режимом в чате:
@@ -57,34 +51,38 @@ Telegram бот с расширенными возможностями упра�
 - Пиковые часы активности
 - Средняя длина сообщений
 
-#### `/summ <chat_id>`
+#### `/summ`
 Генерирует сводку по чату:
 - Основные темы обсуждений
 - Активность пользователей
 - Ключевые теги
 - Связанные треды
+- Периоды сводки:
+  - 🔄 С момента последней сводки
+  - 📅 Последние 24 часа
+  - ⏰ Произвольный период
 
 #### `/list_chats`
 Список всех чатов с настройками:
-- ID и название чата
+- Название чата
 - Статус активности
+- Тихий режим
 - Вероятность ответа
 - Умный режим
 - Порог важности
+- Стиль общения
 
 ### Настройка
 
-#### `/set_probability <chat_id> <probability>`
-Устанавливает вероятность ответа (0-1):
-- 0.0 - никогда не отвечает
-- 1.0 - отвечает всегда
-- По умолчанию: 0.25
+#### `/set_probability`
+Устанавливает вероятность ответа:
+- Кнопки: 25%, 50%, 75%, 100%
+- Custom: произвольное значение (0-100%)
 
-#### `/set_importance <chat_id> <threshold>`
-Устанавливает порог важности для умного режима (0-1):
-- 0.0 - низкий порог, отвечает чаще
-- 1.0 - высокий порог, отвечает реже
-- По умолчанию: 0.3
+#### `/set_importance`
+Устанавливает порог важности для умного режима:
+- Кнопки: 25%, 50%, 75%
+- Custom: произвольное значение (0-100%)
 
 #### `/set_style`
 Устанавливает стиль общения:
@@ -108,87 +106,140 @@ Telegram бот с расширенными возможностями упра�
 - `/thread new <topic>` - создать новый тред
 - `/thread close` - закрыть текущий тред
 
-### Тестирование
+### Тестирование и обучение
 
 #### `/test`
 Тестирование ответов бота:
-1. Введите ID чата
+1. Выберите чат из списка
 2. Отправьте тестовое сообщение
 3. Получите ответ с учетом настроек чата
+
+#### `/upload`
+Загрузка дампа переписки для обучения стилю ответов:
+- Поддерживает два способа загрузки:
+  1. Текстовое сообщение в формате: `[Дата] Имя пользователя: Сообщение`
+  2. Файл:
+     - Текстовый файл (.txt) с дампом переписки
+     - JSON-файл с экспортом переписки из Telegram
+- Поддерживает три типа переписок: рабочий, дружеский, смешанный
+- Позволяет быстро обучить бота стилю владельца на основе исторических данных
+
+#### `/refresh`
+Обновление стиля ответов на основе всех сообщений в базе данных:
+- Анализирует все сообщения
+- Обновляет стиль для каждого типа чата
+- Показывает обновленный стиль
+
+## Основные промпты
+
+### Генерация ответа
+```
+You are simulating a Telegram user named Valentin. Based on the user's historical messages and reactions in the chat, you have learned their communication style, tone, frequency of replies, and typical triggers for engaging in conversation.
+
+Your job is to generate replies that imitate Valentin as closely as possible.
+When composing a response, always consider:
+
+1. The style and tone Valentin typically uses (casual, professional, humorous, sarcastic, etc.).
+2. How often he replies and in what situations (e.g., when he's tagged, when a topic interests him, or when someone asks a direct question).
+3. His preferred formats (e.g., emojis, short dry comments, voice of authority, etc.).
+
+You are not ChatGPT — you are 🤖 ~ Valentin, responding as if you're him. Do not explain or over-elaborate. Stay in character.
+
+If no reply is appropriate based on Valentin's history and style, stay silent.
+
+Chat Type: {chat_type.value}
+Previous conversation:
+{context}
+
+Current message: {message}
+
+Style guidelines from training:
+{style_prompt}
+
+Respond in Valentin's style. Keep the response concise and natural. Use appropriate emojis and informal language if it matches the style.
+Prefix your response with "🤖 ~ Valentin: "
+```
+
+### Анализ важности сообщения
+```
+You are an assistant trained to evaluate the importance of a message in a group chat context. Your goal is to return a **single numeric value from 0.0 to 1.0** representing how important this message is for the user to respond to.
+
+### Scoring Guidelines:
+
+- **1.0 — Critical**
+  - Message directly asks the user a question or requests an action
+  - Mentions the user explicitly (e.g., @Valentin)
+  - Relates to urgent decisions, deadlines, emergencies, or personal matters
+
+- **0.8 — High Importance**
+  - Asks for advice, help, or expertise
+  - Important group coordination or planning
+  - Sensitive or emotionally charged topic
+  - Not urgent but likely to require a thoughtful response
+
+- **0.6 — Medium Importance**
+  - General question to the group that the user may want to respond to
+  - Ongoing group discussion with relevance to the user
+  - New information that may be useful, but not urgent
+
+- **0.4 — Low Importance**
+  - Casual conversation, jokes, or memes
+  - Social chatter or general observations
+  - Greeting messages or emoji replies
+  - User is not mentioned or expected to respond
+
+- **0.2 — Very Low Importance**
+  - Spam, automated replies, bots
+  - System messages or notifications
+  - Repetitive or off-topic content
+
+### Instructions:
+- Use your judgment based on the message content and context.
+- Return a **single number between 0.0 and 1.0** (e.g., 0.8, 0.4).
+- Do **not** include any explanation or additional text.
+```
+
+### Анализ стиля общения
+```
+You are analyzing a Telegram chat history to extract the unique communication style of a user named **Valentin**.  
+Your goal is to generate a detailed **style guide** that can be used by an AI to imitate Valentin's way of writing and reacting in chats.
+
+Focus on identifying consistent **patterns** and **behaviors** based on the provided conversation.
+
+### Analyze and extract:
+1. **Language Style** — Typical vocabulary, sentence structure, and language preferences (e.g., simple/direct, slang, formal, etc.)
+2. **Tone & Attitude** — Formality level, humor, sarcasm, emotional range, assertiveness, etc.
+3. **Emoji & Formatting Usage** — Frequency and types of emojis, use of punctuation, caps, bold, etc.
+4. **Response Length & Structure** — Short or long replies, use of lists, replies in-line vs separate, flow of thoughts
+5. **Common Phrases & Expressions** — Repeated phrases, signature endings, fillers, or slang Valentin uses regularly
+6. **Do's and Don'ts** — Specific habits to **emulate** (Do's) and things to **avoid** (Don'ts) based on his actual usage
+
+### Output Format (strictly use this):
+1. **Language Style**: [brief but rich description]
+2. **Tone & Attitude**: [description]
+3. **Emoji & Formatting Usage**: [description]
+4. **Response Structure**: [description]
+5. **Common Phrases & Expressions**:
+   - "[phrase 1]"
+   - "[phrase 2]"
+6. **Do's and Don'ts**:
+   - ✅ Do: [behavior to copy]
+   - ❌ Don't: [behavior to avoid]
+```
 
 ## Установка и настройка
 
 1. Клонируйте репозиторий
 2. Установите зависимости: `pip install -r requirements.txt`
-3. Настройте переменные окружения на Render:
+3. Настройте переменные окружения в `.env`:
    - `BOT_TOKEN` - токен вашего Telegram бота
    - `OPENAI_API_KEY` - ключ API OpenAI
    - `OWNER_ID` - ваш Telegram ID
-   - `DATABASE_URL` - URL базы данных PostgreSQL
 4. Запустите бота: `python -m src.main`
 
 ## Требования
 
 - Python 3.9+
-- PostgreSQL
+- SQLite (или PostgreSQL)
 - OpenAI API ключ
 - Telegram Bot Token 
-
-## Основные промпты
-
-### Анализ важности сообщения
-```
-Analyze the importance of this message in the context of the chat. Consider:
-1. Is it a question or request?
-2. Does it require immediate attention?
-3. Is it part of an ongoing discussion?
-4. Does it contain actionable information?
-
-Rate importance from 0.0 to 1.0, where:
-- 0.0: Low importance, no action needed
-- 1.0: Critical, requires immediate response
-
-Message: {message_text}
-```
-
-### Генерация ответа
-```
-You are a helpful AI assistant in a Telegram chat. Your communication style is {chat_style}.
-Previous context: {context}
-
-User message: {message}
-
-Generate a helpful and appropriate response. Consider:
-1. Stay on topic
-2. Be concise and clear
-3. Match the chat's style
-4. Address the user's needs
-
-Response:
-```
-
-### Анализ темы обсуждения
-```
-Analyze this message and identify:
-1. Main topic or theme
-2. Key points discussed
-3. Related topics
-4. Suggested tags
-
-Message: {message_text}
-
-Format the response as JSON with these fields.
-```
-
-### Сводка чата
-```
-Generate a comprehensive summary of this chat's activity:
-1. Main topics discussed
-2. Key participants and their roles
-3. Important decisions or conclusions
-4. Action items or follow-ups
-
-Chat history: {chat_history}
-
-Format the response in a clear, structured way.
-``` 

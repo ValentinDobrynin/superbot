@@ -170,46 +170,24 @@ Message to analyze: {message}"""
         except ValueError:
             return 0.5  # Default to medium importance if parsing fails 
 
-    @staticmethod
-    async def refresh_style(conversation_text: str) -> str:
-        """Refresh the style guide based on new conversation data."""
-        prompt = f"""You are analyzing a Telegram chat history to extract the unique communication style of a user named **Valentin**.  
-Your goal is to generate a detailed **style guide** that can be used by an AI to imitate Valentin's way of writing and reacting in chats.
-
-Focus on identifying consistent **patterns** and **behaviors** based on the provided conversation.
-
-### Analyze and extract:
-1. **Language Style** — Typical vocabulary, sentence structure, and language preferences (e.g., simple/direct, slang, formal, etc.)
-2. **Tone & Attitude** — Formality level, humor, sarcasm, emotional range, assertiveness, etc.
-3. **Emoji & Formatting Usage** — Frequency and types of emojis, use of punctuation, caps, bold, etc.
-4. **Response Length & Structure** — Short or long replies, use of lists, replies in-line vs separate, flow of thoughts
-5. **Common Phrases & Expressions** — Repeated phrases, signature endings, fillers, or slang Valentin uses regularly
-6. **Do's and Don'ts** — Specific habits to **emulate** (Do's) and things to **avoid** (Don'ts) based on his actual usage
-
-### Output Format (strictly use this):
-
-1. **Language Style**: [brief but rich description]
-2. **Tone & Attitude**: [description]
-3. **Emoji & Formatting Usage**: [description]
-4. **Response Structure**: [description]
-5. **Common Phrases & Expressions**:
-   - "[phrase 1]"
-   - "[phrase 2]"
-6. **Do's and Don'ts**:
-   - ✅ Do: [behavior to copy]
-   - ❌ Don't: [behavior to avoid]
-
-### Conversation Sample:
-{conversation_text}"""
+    async def refresh_style(self, conversation_text: str, chat_type: str = None) -> str:
+        """Refresh style guide based on conversation text."""
+        prompt = f"""Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
+        Consider the following aspects:
+        1. Language style (formal/informal, technical/casual)
+        2. Tone (friendly, professional, etc.)
+        3. Emoji usage patterns
+        4. Response structure and length
+        5. Common phrases and expressions
+        6. Response timing patterns
+        7. Specific formatting preferences
         
-        response = await client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a communication style analyzer. Extract and describe the user's unique writing style."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
+        Chat type: {chat_type or 'mixed'}
         
-        return response.choices[0].message.content.strip() 
+        Conversation:
+        {conversation_text}
+        
+        Create a comprehensive style guide that captures all these aspects."""
+        
+        response = await self._make_request(prompt)
+        return response 

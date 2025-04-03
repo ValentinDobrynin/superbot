@@ -16,16 +16,17 @@ class Chat(Base):
     __tablename__ = "chats"
     
     id = Column(Integer, primary_key=True)
-    chat_id = Column(BigInteger, unique=True)
-    title = Column(String)
-    chat_type = Column(Enum(ChatType))
+    chat_id = Column(BigInteger, unique=True, nullable=False)
+    title = Column(String, nullable=False)
+    chat_type = Column(Enum(ChatType), default=ChatType.MIXED)
     is_active = Column(Boolean, default=True)  # False means bot is completely disabled
     is_silent = Column(Boolean, default=False)  # True means bot reads but doesn't respond
-    response_probability = Column(Float, default=0.25)
-    smart_mode = Column(Boolean, default=False)
-    importance_threshold = Column(Float, default=0.3)  # Threshold for smart mode
+    response_probability = Column(Float, default=0.5)
+    smart_mode = Column(Boolean, default=True)
+    importance_threshold = Column(Float, default=0.5)  # Threshold for smart mode
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_summary_timestamp = Column(DateTime, nullable=True)
     
     messages = relationship("Message", back_populates="chat")
     threads = relationship("MessageThread", back_populates="chat")
