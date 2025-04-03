@@ -1,11 +1,14 @@
 services:
-  - type: web
+  - type: background
     name: superbot
     env: docker
     region: frankfurt  # или другой регион по вашему выбору
     plan: free
     branch: main
-    healthCheckPath: /
+    buildCommand: |
+      cp apply_migrations.sh /opt/render/project/src/
+      chmod +x /opt/render/project/src/apply_migrations.sh
+    startCommand: python src/main.py
     envVars:
       - key: BOT_TOKEN
         sync: false
