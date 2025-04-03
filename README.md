@@ -431,9 +431,10 @@ ProgrammingError: column chats.last_summary_timestamp does not exist
 This means that the database schema is out of sync with the code. To fix this:
 
 1. Stop the Render service:
-   - Go to the Render dashboard
-   - Find your service
-   - Click "Manual Deploy" -> "Stop"
+   - Go to the Render dashboard (dashboard.render.com)
+   - Find your Background Worker service
+   - Click "Suspend" button (red)
+   - Confirm the action
 
 2. Connect to Render Shell:
    ```bash
@@ -450,7 +451,7 @@ This means that the database schema is out of sync with the code. To fix this:
    python reset_db.py
    ```
 
-5. Go back to the Render dashboard and start the service:
-   - Click "Manual Deploy" -> "Start"
+5. Go back to the Render dashboard and resume the service:
+   - Click "Resume" button (green)
 
 Note: This will delete all existing data in the database. Make sure to backup any important data before resetting. 
