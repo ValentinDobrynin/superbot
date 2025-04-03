@@ -430,29 +430,35 @@ ProgrammingError: column chats.last_summary_timestamp does not exist
 
 This means that the database schema is out of sync with the code. To fix this:
 
-1. Create a new migration:
+#### Option 1: Using Render Shell
+1. Connect to Render Shell:
+   ```bash
+   render shell
+   ```
+
+2. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+
+3. Create and apply migrations:
    ```bash
    alembic revision --autogenerate -m "add last_summary_timestamp"
-   ```
-
-2. Review the generated migration in `src/database/migrations/versions/`
-
-3. Apply the migration:
-   ```bash
    alembic upgrade head
    ```
 
-For Render deployment:
-1. Add the migration command to your build script:
-   ```bash
-   #!/usr/bin/env bash
-   alembic upgrade head
-   python src/main.py
-   ```
+#### Option 2: Using Render CLI (without Shell)
+```bash
+render run "cd /opt/render/project/src && alembic upgrade head"
+```
 
-2. Or use Render CLI to apply migrations:
-   ```bash
-   render run alembic upgrade head
-   ```
+#### Option 3: Add to Build Script
+Add migration commands to your build script in Render dashboard:
+```bash
+#!/usr/bin/env bash
+cd /opt/render/project/src
+alembic upgrade head
+python src/main.py
+```
 
 Note: Using migrations is safer than resetting the database as it preserves existing data. 
