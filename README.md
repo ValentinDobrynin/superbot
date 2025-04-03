@@ -430,25 +430,29 @@ ProgrammingError: column chats.last_summary_timestamp does not exist
 
 This means that the database schema is out of sync with the code. To fix this:
 
-1. Connect to Render Shell (while the service is still running):
+1. Create a new migration:
    ```bash
-   render shell
+   alembic revision --autogenerate -m "add last_summary_timestamp"
    ```
 
-2. Navigate to the project directory:
+2. Review the generated migration in `src/database/migrations/versions/`
+
+3. Apply the migration:
    ```bash
-   cd /opt/render/project/src
+   alembic upgrade head
    ```
 
-3. Reset the database:
+For Render deployment:
+1. Add the migration command to your build script:
    ```bash
-   python reset_db.py
+   #!/usr/bin/env bash
+   alembic upgrade head
+   python src/main.py
    ```
 
-4. Go to the Render dashboard (dashboard.render.com):
-   - Find your Background Worker service
-   - Click "Suspend" button (red)
-   - Wait a few seconds
-   - Click "Resume" button (green)
+2. Or use Render CLI to apply migrations:
+   ```bash
+   render run alembic upgrade head
+   ```
 
-Note: This will delete all existing data in the database. Make sure to backup any important data before resetting. 
+Note: Using migrations is safer than resetting the database as it preserves existing data. 
