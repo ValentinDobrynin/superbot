@@ -52,7 +52,7 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             session.add(chat)
             await session.commit()
     except Exception as e:
-        logger.error(f"Failed to update chat title for chat_id {chat_id}: {e}")
+        logger.error(f"Failed to update chat title for chat_id {chat_id}: {e}", exc_info=True)
 
 class TestStates(StatesGroup):
     waiting_for_chat = State()
@@ -672,11 +672,13 @@ async def list_chats_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
+    logger.info("Starting list_chats command")
     chats = await session.execute(select(Chat))
     chats = chats.scalars().all()
     
     # Update chat titles
     for chat in chats:
+        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
         await update_chat_title(message, chat.chat_id, session)
     
     if not chats:
@@ -685,6 +687,8 @@ async def list_chats_command(message: Message, session: AsyncSession):
         
     text = "📋 List of chats:\n\n"
     for chat in chats:
+        # Refresh chat object from database to get updated title
+        chat = await session.get(Chat, chat.id)
         text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
         text += f"Active: {'✅' if chat.is_active else '❌'}\n"
         text += f"Response Probability: {chat.response_probability}\n"
