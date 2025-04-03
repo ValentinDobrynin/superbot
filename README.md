@@ -430,19 +430,27 @@ ProgrammingError: column chats.last_summary_timestamp does not exist
 
 This means that the database schema is out of sync with the code. To fix this:
 
-1. Stop the bot:
+1. Stop the Render service:
+   - Go to the Render dashboard
+   - Find your service
+   - Click "Manual Deploy" -> "Stop"
+
+2. Connect to Render Shell:
    ```bash
-   pkill -f "python -m src.main"
+   render shell
    ```
 
-2. Reset the database:
+3. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+
+4. Reset the database:
    ```bash
    python reset_db.py
    ```
 
-3. Start the bot again:
-   ```bash
-   python -m src.main
-   ```
+5. Go back to the Render dashboard and start the service:
+   - Click "Manual Deploy" -> "Start"
 
 Note: This will delete all existing data in the database. Make sure to backup any important data before resetting. 
