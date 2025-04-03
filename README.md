@@ -227,17 +227,125 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
    - ❌ Don't: [behavior to avoid]
 ```
 
-## Установка и настройка
+## 🚀 Установка и запуск
 
-1. Клонируйте репозиторий
-2. Установите зависимости: `pip install -r requirements.txt`
-3. Настройте переменные окружения в `.env`:
-   - `BOT_TOKEN` - токен вашего Telegram бота
-   - `OPENAI_API_KEY` - ключ API OpenAI
-   - `OWNER_ID` - ваш Telegram ID
-4. Запустите бота: `python -m src.main`
+### Предварительные требования
+- Python 3.11+
+- PostgreSQL (для продакшена)
+- Telegram Bot Token (получить у @BotFather)
+- OpenAI API Key
+- Render.com аккаунт
 
-## Требования
+### Настройка на Render.com
+
+1. Создайте новый Background Worker на Render.com:
+   - Выберите "New +" -> "Background Worker"
+   - Подключите ваш GitHub репозиторий
+   - Выберите ветку для деплоя (обычно main)
+
+2. Настройте переменные окружения в Render:
+   ```
+   BOT_TOKEN=ваш_токен_бота
+   OWNER_ID=ваш_telegram_id
+   OPENAI_API_KEY=ваш_openai_api_key
+   DATABASE_URL=postgresql://user:password@host:port/database
+   ```
+
+3. Настройте команду запуска:
+   ```
+   python src/main.py
+   ```
+
+4. Настройте автоматический деплой:
+   - Включите Auto-Deploy
+   - Установите Health Check Path (если требуется)
+
+### Локальная разработка
+
+1. Клонируйте репозиторий:
+   ```bash
+   git clone https://github.com/yourusername/superbot.git
+   cd superbot
+   ```
+
+2. Создайте виртуальное окружение:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # для Linux/Mac
+   # или
+   .\venv\Scripts\activate  # для Windows
+   ```
+
+3. Установите зависимости:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Создайте файл `.env` с переменными окружения:
+   ```
+   BOT_TOKEN=ваш_токен_бота
+   OWNER_ID=ваш_telegram_id
+   OPENAI_API_KEY=ваш_openai_api_key
+   DATABASE_URL=postgresql://user:password@host:port/database
+   ```
+
+5. Запустите бота:
+   ```bash
+   python src/main.py
+   ```
+
+### Миграции базы данных
+
+При первом запуске на Render или после изменений в моделях:
+
+1. Локально:
+   ```bash
+   alembic upgrade head
+   ```
+
+2. На Render:
+   - Используйте Render Shell для выполнения миграций:
+   ```bash
+   # Подключитесь к Render Shell
+   render shell
+   
+   # Перейдите в директорию проекта
+   cd /opt/render/project/src
+   
+   # Выполните миграции
+   ./scripts/apply_migrations.sh
+   ```
+   
+   Или используйте команду в панели управления Render:
+   ```
+   cd /opt/render/project/src && ./scripts/apply_migrations.sh
+   ```
+
+### Мониторинг и логи
+
+- Логи доступны в панели управления Render
+- Используйте команду `/logs` для просмотра логов в Telegram
+- Настройте уведомления о падении сервиса в Render
+
+## 📋 Требования
+
+### База данных
+- PostgreSQL 14+ (для продакшена)
+- SQLite (для локальной разработки)
+
+### Python зависимости
+- aiogram 3.x
+- SQLAlchemy 2.x
+- Alembic
+- python-dotenv
+- openai
+- psycopg2-binary (для PostgreSQL)
+- python-telegram-bot-pagination
+
+### Внешние сервисы
+- Telegram Bot API
+- OpenAI API
+- Render.com (для хостинга)
 
 - Python 3.9+
 - SQLite (или PostgreSQL)
