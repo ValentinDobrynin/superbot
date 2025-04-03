@@ -1,30 +1,28 @@
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from .models import Base
-from .config import engine, async_session
-from .migrations.run_migrations import run_migrations
-import logging
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-logger = logging.getLogger(__name__)
+from src.config import settings
+
+# Create async engine
+engine = create_async_engine(settings.DATABASE_URL, echo=True)
+
+# Create async session factory
+async_session = sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False
+)
+
+# Create declarative base
+Base = declarative_base()
 
 async def init_db():
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
-        
-        # Run migrations
-        await run_migrations()
-        logger.info("Database migrations completed")
-    except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}")
-        raise
+    """Initialize the database by creating all tables."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 async def get_session() -> AsyncSession:
-    """Get a new database session."""
-    try:
-        session = async_session()
-        return session
-    except Exception as e:
-        logger.error(f"Error creating database session: {str(e)}")
-        raise 
+    """Get database session."""
+    async with async_session() as session:
+        yield session 
