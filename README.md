@@ -378,3 +378,45 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
    ```bash
    python src/database/init_db.py
    ``` 
+
+## Troubleshooting
+
+### Telegram Bot Process Conflict
+
+If you see an error like this when starting the bot:
+```
+TelegramConflictError: Telegram server says - Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+```
+
+This means that another instance of the bot is already running somewhere. Here's how to fix it:
+
+1. Connect to Render Shell:
+   ```bash
+   render shell
+   ```
+
+2. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+
+3. Check for running Python processes:
+   ```bash
+   ps aux | grep python
+   ```
+   Look for processes running `python -m src.main`
+
+4. Stop all bot processes:
+   ```bash
+   pkill -f "python -m src.main"
+   ```
+
+5. Start the bot again:
+   ```bash
+   python -m src.main
+   ```
+
+If the problem persists:
+1. Check the Render dashboard for other running services with this bot
+2. Make sure the bot is not running on your local machine or other servers
+3. Wait a few minutes and try again (sometimes Telegram needs time to release the connection) 
