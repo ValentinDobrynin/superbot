@@ -2,9 +2,9 @@
 import os
 import sys
 
-# Add the current directory to Python path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
+# Add the project root directory to Python path
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 
 from src.database.reset_db import main
 import asyncio
