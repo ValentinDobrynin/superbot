@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table, BigInteger
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, timedelta
@@ -16,7 +16,7 @@ class Chat(Base):
     __tablename__ = "chats"
     
     id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, unique=True)
+    chat_id = Column(BigInteger, unique=True)
     title = Column(String)
     chat_type = Column(Enum(ChatType))
     is_active = Column(Boolean, default=True)  # False means bot is completely disabled
@@ -86,7 +86,7 @@ class Message(Base):
     
     id = Column(Integer, primary_key=True)
     message_id = Column(Integer)
-    chat_id = Column(Integer, ForeignKey("chats.id"))
+    chat_id = Column(BigInteger, ForeignKey("chats.id"))
     user_id = Column(Integer)
     text = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
