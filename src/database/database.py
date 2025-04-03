@@ -18,6 +18,13 @@ async_session = sessionmaker(
 # Create declarative base
 Base = declarative_base()
 
+async def reset_db():
+    """Reset the database by dropping all tables and creating new ones."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+        print("✅ Database reset successfully!")
+
 async def init_db():
     """Initialize the database by creating tables if they don't exist."""
     async with engine.begin() as conn:
@@ -30,7 +37,7 @@ async def init_db():
             await conn.run_sync(Base.metadata.create_all)
             print("✅ Database tables created successfully!")
         else:
-            print("✅ Database tables already exist.")
+            print("⚠️ Database tables already exist. If you need to reset the database, use reset_db()")
 
 async def get_session() -> AsyncSession:
     """Get database session."""
