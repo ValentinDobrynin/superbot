@@ -54,6 +54,8 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
             session.add(chat)
             await session.commit()
             logger.info(f"Created new chat: {chat.title} (ID: {chat.chat_id})")
+        else:
+            logger.info(f"Chat already exists in database: {chat.title} (ID: {chat.chat_id})")
         
     # Update chat title if it changed
     if event.chat.title != event.old_chat.title:

@@ -105,12 +105,18 @@ async def status_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
+    logger.info("Starting status command")
+    
     # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    chats_query = select(Chat)
+    logger.info(f"Executing query: {chats_query}")
+    chats_result = await session.execute(chats_query)
+    chats = chats_result.scalars().all()
+    logger.info(f"Found {len(chats)} chats in database")
     
     # Update chat titles
     for chat in chats:
+        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
         await update_chat_title(message, chat.chat_id, session)
     
     status_text = "🤖 Bot Status:\n\n"
@@ -119,6 +125,7 @@ async def status_command(message: Message, session: AsyncSession):
     status_text += f"🔒 Global Status: {'🔴 Shutdown' if settings.is_shutdown else '🟢 Active'}\n\n"
     
     for chat in chats:
+        logger.info(f"Processing chat: {chat.title} (ID: {chat.chat_id})")
         status_text += f"📱 {chat.title}:\n"
         
         # Show both active and silent status
@@ -673,8 +680,13 @@ async def list_chats_command(message: Message, session: AsyncSession):
         return
     
     logger.info("Starting list_chats command")
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    
+    # Get all chats
+    chats_query = select(Chat)
+    logger.info(f"Executing query: {chats_query}")
+    chats_result = await session.execute(chats_query)
+    chats = chats_result.scalars().all()
+    logger.info(f"Found {len(chats)} chats in database")
     
     # Update chat titles
     for chat in chats:
@@ -689,6 +701,7 @@ async def list_chats_command(message: Message, session: AsyncSession):
     for chat in chats:
         # Refresh chat object from database to get updated title
         chat = await session.get(Chat, chat.id)
+        logger.info(f"Refreshed chat from database: {chat.title} (ID: {chat.chat_id})")
         text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
         text += f"Active: {'✅' if chat.is_active else '❌'}\n"
         text += f"Response Probability: {chat.response_probability}\n"
