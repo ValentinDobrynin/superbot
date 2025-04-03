@@ -351,3 +351,30 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
 - SQLite (или PostgreSQL)
 - OpenAI API ключ
 - Telegram Bot Token 
+
+## Database Setup
+
+### Local Development
+1. Create a PostgreSQL database
+2. Set up environment variables (copy from `.env.example`):
+   ```bash
+   cp .env.example .env
+   ```
+3. Initialize the database:
+   ```bash
+   python src/database/init_db.py
+   ```
+
+### Render Deployment
+1. Connect to Render Shell:
+   ```bash
+   render shell
+   ```
+2. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+3. Initialize the database:
+   ```bash
+   python src/database/init_db.py
+   ``` 
