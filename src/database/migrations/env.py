@@ -40,7 +40,9 @@ def get_url():
     database_url = os.getenv('DATABASE_URL')
     if not database_url:
         raise ValueError("DATABASE_URL environment variable is not set")
-    return database_url
+    
+    # Replace asyncpg with psycopg2 for synchronous operations
+    return database_url.replace('postgresql+asyncpg', 'postgresql')
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
