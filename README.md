@@ -547,4 +547,21 @@ alembic current
 To see migration history:
 ```bash
 alembic history
-``` 
+```
+
+### Troubleshooting
+
+If you see an error like:
+```
+ModuleNotFoundError: No module named 'src'
+```
+
+This means you're trying to run migrations from the wrong directory. Make sure you're in the correct directory:
+```bash
+cd /opt/render/project/src
+```
+
+If you see an error about missing `alembic.ini`:
+1. Make sure you're in the correct directory
+2. Check that the file exists: `ls -la alembic.ini`
+3. If the file is missing, you may need to wait for the deployment to complete 
