@@ -1,13 +1,13 @@
 services:
   - type: background
     name: superbot
-    env: docker
+    env: python
     region: frankfurt  # или другой регион по вашему выбору
     plan: free
     branch: main
     buildCommand: |
-      cp apply_migrations.sh /opt/render/project/src/
-      chmod +x /opt/render/project/src/apply_migrations.sh
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python src/main.py
     envVars:
       - key: BOT_TOKEN
