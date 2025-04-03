@@ -420,3 +420,29 @@ If the problem persists:
 1. Check the Render dashboard for other running services with this bot
 2. Make sure the bot is not running on your local machine or other servers
 3. Wait a few minutes and try again (sometimes Telegram needs time to release the connection) 
+
+### Database Schema Changes
+
+If you see an error like this:
+```
+ProgrammingError: column chats.last_summary_timestamp does not exist
+```
+
+This means that the database schema is out of sync with the code. To fix this:
+
+1. Stop the bot:
+   ```bash
+   pkill -f "python -m src.main"
+   ```
+
+2. Reset the database:
+   ```bash
+   python reset_db.py
+   ```
+
+3. Start the bot again:
+   ```bash
+   python -m src.main
+   ```
+
+Note: This will delete all existing data in the database. Make sure to backup any important data before resetting. 
