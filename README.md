@@ -313,12 +313,12 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
    cd /opt/render/project/src
    
    # Выполните миграции
-   ./scripts/apply_migrations.sh
+   ./apply_migrations.sh
    ```
    
    Или используйте команду в панели управления Render:
    ```
-   cd /opt/render/project/src && ./scripts/apply_migrations.sh
+   cd /opt/render/project/src && ./apply_migrations.sh
    ```
 
 ### Мониторинг и логи
