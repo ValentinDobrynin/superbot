@@ -49,7 +49,7 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
                 response_probability=0.5,
                 importance_threshold=0.5,
                 smart_mode=True,
-                chat_type=ChatType.mixed
+                chat_type=ChatType.MIXED
             )
             session.add(chat)
             await session.commit()
@@ -107,7 +107,7 @@ async def handle_message(message: Message, session: AsyncSession):
             response_probability=0.5,
             importance_threshold=0.5,
             smart_mode=True,
-            chat_type=ChatType.mixed
+            chat_type=ChatType.MIXED
         )
         session.add(chat)
         await session.commit()
