@@ -430,28 +430,25 @@ ProgrammingError: column chats.last_summary_timestamp does not exist
 
 This means that the database schema is out of sync with the code. To fix this:
 
-1. Stop the Render service:
-   - Go to the Render dashboard (dashboard.render.com)
-   - Find your Background Worker service
-   - Click "Suspend" button (red)
-   - Confirm the action
-
-2. Connect to Render Shell:
+1. Connect to Render Shell (while the service is still running):
    ```bash
    render shell
    ```
 
-3. Navigate to the project directory:
+2. Navigate to the project directory:
    ```bash
    cd /opt/render/project/src
    ```
 
-4. Reset the database:
+3. Reset the database:
    ```bash
    python reset_db.py
    ```
 
-5. Go back to the Render dashboard and resume the service:
+4. Go to the Render dashboard (dashboard.render.com):
+   - Find your Background Worker service
+   - Click "Suspend" button (red)
+   - Wait a few seconds
    - Click "Resume" button (green)
 
 Note: This will delete all existing data in the database. Make sure to backup any important data before resetting. 
