@@ -462,3 +462,89 @@ python src/main.py
 ```
 
 Note: Using migrations is safer than resetting the database as it preserves existing data. 
+
+## Database Migrations
+
+We use Alembic for database migrations. Here's how to work with migrations:
+
+### Creating a Migration
+
+1. Connect to Render Shell:
+   ```bash
+   render shell
+   ```
+
+2. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+
+3. Create a new migration:
+   ```bash
+   alembic revision --autogenerate -m "description of changes"
+   ```
+   This will create a new migration file in `src/database/migrations/versions/`
+
+4. Review the generated migration file and make any necessary adjustments
+
+### Applying Migrations
+
+There are two ways to apply migrations:
+
+#### Option 1: Using Render Shell
+
+1. Connect to Render Shell:
+   ```bash
+   render shell
+   ```
+
+2. Navigate to the project directory:
+   ```bash
+   cd /opt/render/project/src
+   ```
+
+3. Apply migrations:
+   ```bash
+   alembic upgrade head
+   ```
+
+#### Option 2: Using Render CLI
+
+1. Install Render CLI:
+   ```bash
+   brew install render
+   ```
+
+2. Login to Render:
+   ```bash
+   render login
+   ```
+
+3. Apply migrations:
+   ```bash
+   render run "cd /opt/render/project/src && alembic upgrade head" --service your-service-name
+   ```
+
+### Rolling Back Migrations
+
+To roll back the last migration:
+```bash
+alembic downgrade -1
+```
+
+To roll back to a specific version:
+```bash
+alembic downgrade <revision_id>
+```
+
+### Checking Migration Status
+
+To see the current migration status:
+```bash
+alembic current
+```
+
+To see migration history:
+```bash
+alembic history
+``` 
