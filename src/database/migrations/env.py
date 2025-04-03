@@ -36,15 +36,11 @@ target_metadata = Base.metadata
 # ... etc.
 
 def get_url():
-    # Get environment variables
-    user = os.getenv('POSTGRES_USER', 'postgres')
-    password = os.getenv('POSTGRES_PASSWORD', '')
-    host = os.getenv('POSTGRES_HOST', 'localhost')
-    port = os.getenv('POSTGRES_PORT', '5432')
-    db = os.getenv('POSTGRES_DB', 'postgres')
-    
-    # Construct the URL
-    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    # Get DATABASE_URL from environment
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
+    return database_url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
