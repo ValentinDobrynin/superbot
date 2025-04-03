@@ -1,6 +1,7 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import inspect
 
 from src.config import settings
 
@@ -18,9 +19,18 @@ async_session = sessionmaker(
 Base = declarative_base()
 
 async def init_db():
-    """Initialize the database by creating all tables."""
+    """Initialize the database by creating tables if they don't exist."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # Get inspector to check existing tables
+        inspector = inspect(conn)
+        existing_tables = inspector.get_table_names()
+        
+        # Create tables only if they don't exist
+        if not existing_tables:
+            await conn.run_sync(Base.metadata.create_all)
+            print("✅ Database tables created successfully!")
+        else:
+            print("✅ Database tables already exist.")
 
 async def get_session() -> AsyncSession:
     """Get database session."""
