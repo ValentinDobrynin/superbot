@@ -95,7 +95,7 @@ async def help_command(message: Message, session: AsyncSession):
 /thread - Manage message threads
 
 🔒 System:
-/shutdown - Toggle global silence mode"""
+/shutdown - Toggle global silent mode"""
     
     await message.answer(help_text, parse_mode=None)
 
@@ -221,29 +221,35 @@ async def status_command(message: Message, session: AsyncSession):
 
 @router.message(Command("shutdown"))
 async def shutdown_command(message: Message, session: AsyncSession):
-    """Toggle global silence mode."""
+    """Toggle global silent mode (sets all chats to silent mode)."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
     settings.is_shutdown = not settings.is_shutdown
-    status = "enabled" if settings.is_shutdown else "disabled"
     
     if settings.is_shutdown:
+        # Set all chats to silent mode
+        chats = await session.execute(select(Chat))
+        chats = chats.scalars().all()
+        for chat in chats:
+            chat.is_silent = True
+        await session.commit()
+        
         await message.answer(
-            "🔴 Global silence mode enabled\n"
-            "ℹ️ Bot will continue reading messages but won't respond",
+            "🔴 Global silent mode enabled\n"
+            "ℹ️ All chats are now in silent mode (bot reads but doesn't respond)",
             parse_mode=None
         )
     else:
         await message.answer(
-            "🟢 Global silence mode disabled\n"
-            "ℹ️ Bot will respond to messages again",
+            "🟢 Global silent mode disabled\n"
+            "ℹ️ Chats will return to their previous state",
             parse_mode=None
         )
 
 @router.message(Command("setmode"))
 async def setmode_command(message: Message, session: AsyncSession):
-    """Enable/disable bot in chats (complete shutdown)."""
+    """Toggle silent mode in chats (bot reads but doesn't respond)."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
@@ -257,18 +263,48 @@ async def setmode_command(message: Message, session: AsyncSession):
     
     keyboard = []
     for chat in chats:
-        status = "✅" if chat.is_active else "❌"
+        status = "🔇" if chat.is_silent else "🔊"
         keyboard.append([
             InlineKeyboardButton(
                 text=f"{status} {chat.title}",
-                callback_data=f"toggle_chat_{chat.id}"
+                callback_data=f"toggle_silent_{chat.id}"
             )
         ])
     
     await message.answer(
-        "Select chat to toggle bot activity (❌ = completely disabled):",
+        "Select chat to toggle silent mode (🔇 = silent mode):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
+
+@router.callback_query(lambda c: c.data.startswith("toggle_silent_"))
+async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
+    """Process toggle silent mode callback."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can toggle silent mode", show_alert=True)
+        return
+    
+    chat_id = int(callback.data.split("_")[2])
+    chat = await session.get(Chat, chat_id)
+    
+    if chat:
+        chat.is_silent = not chat.is_silent
+        await session.commit()
+        
+        # Update button text
+        status = "🔇" if chat.is_silent else "🔊"
+        keyboard = callback.message.reply_markup.inline_keyboard
+        for row in keyboard:
+            for button in row:
+                if button.callback_data == callback.data:
+                    button.text = f"{status} {chat.title}"
+                    break
+        
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        await callback.answer(f"Silent mode {'enabled' if chat.is_silent else 'disabled'} for {chat.title}")
+    else:
+        await callback.answer("Chat not found", show_alert=True)
 
 @router.message(Command("silent"))
 async def silent_command(message: Message, session: AsyncSession):
@@ -704,9 +740,9 @@ async def list_chats_command(message: Message, session: AsyncSession):
         logger.info(f"Refreshed chat from database: {chat.title} (ID: {chat.chat_id})")
         text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
         text += f"Active: {'✅' if chat.is_active else '❌'}\n"
-        text += f"Response Probability: {chat.response_probability}\n"
+        text += f"Response Probability: {chat.response_probability*100:.0f}%\n"
         text += f"Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
-        text += f"Importance Threshold: {chat.importance_threshold}\n\n"
+        text += f"Importance Threshold: {chat.importance_threshold*100:.0f}%\n\n"
     
     await message.answer(text, parse_mode=None)
 
