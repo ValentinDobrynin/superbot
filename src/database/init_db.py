@@ -3,7 +3,8 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from src.database.models import Base
+from src.database.base import Base
+from src.database.models import *  # Import all models to register them with Base
 from src.config import settings
 
 async def init_db():

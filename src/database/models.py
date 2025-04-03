@@ -1,11 +1,11 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table, BigInteger
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, timedelta
 import enum
 from uuid import uuid4
 
-Base = declarative_base()
+from .base import Base
 
 class ChatType(enum.Enum):
     WORK = "work"

@@ -1,9 +1,11 @@
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import inspect, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 
 from src.config import settings
+from .base import Base
+from .models import *  # Import all models to register them with Base
 
 # Create async engine
 engine = create_async_engine(settings.DATABASE_URL, echo=True)
@@ -14,9 +16,6 @@ async_session = sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False
 )
-
-# Create declarative base
-Base = declarative_base()
 
 async def reset_db():
     """Reset the database by dropping all tables and creating new ones."""
