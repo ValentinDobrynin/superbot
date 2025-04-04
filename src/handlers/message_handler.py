@@ -44,7 +44,6 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
             chat = Chat(
                 chat_id=event.chat.id,
                 title=title,
-                is_active=True,
                 is_silent=False,
                 response_probability=0.5,
                 importance_threshold=0.5,
@@ -102,7 +101,6 @@ async def handle_message(message: Message, session: AsyncSession):
         chat = Chat(
             chat_id=message.chat.id,
             title=title,
-            is_active=True,
             is_silent=False,
             response_probability=0.5,
             importance_threshold=0.5,
@@ -113,10 +111,6 @@ async def handle_message(message: Message, session: AsyncSession):
         await session.commit()
         logger.info(f"Created new chat: {chat.title} (ID: {chat.chat_id})")
     
-    # Skip if chat is completely disabled
-    if not chat.is_active:
-        return
-        
     # If chat is in silent mode, only process the message without responding
     if chat.is_silent:
         # TODO: Process message for learning/context but don't respond

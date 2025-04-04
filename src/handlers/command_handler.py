@@ -313,28 +313,6 @@ async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
     else:
         await callback.answer("Chat not found", show_alert=True)
 
-@router.callback_query(F.data.startswith("toggle_chat_"))
-async def toggle_chat(callback: CallbackQuery, session: AsyncSession):
-    """Toggle chat active status (complete shutdown)."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    chat_id = int(callback.data.split("_")[2])
-    chat = await session.get(Chat, chat_id)
-    
-    if chat:
-        chat.is_active = not chat.is_active
-        # If chat is disabled, also disable silent mode
-        if not chat.is_active:
-            chat.is_silent = False
-        await session.commit()
-        
-        status = "✅" if chat.is_active else "❌"
-        await callback.message.edit_text(
-            f"Chat {chat.title} is now {'active' if chat.is_active else 'completely disabled'}",
-            reply_markup=callback.message.reply_markup
-        )
-
 @router.message(Command("set_probability"))
 async def set_probability_command(message: Message, session: AsyncSession):
     """Set response probability for a chat."""
@@ -693,7 +671,7 @@ async def list_chats_command(message: Message, session: AsyncSession):
         chat = await session.get(Chat, chat.id)
         logger.info(f"Refreshed chat from database: {chat.title} (ID: {chat.chat_id})")
         text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
-        text += f"Active: {'✅' if chat.is_active else '❌'}\n"
+        text += f"Silent Mode: {'🔇' if chat.is_silent else '🔊'}\n"
         text += f"Response Probability: {chat.response_probability*100:.0f}%\n"
         text += f"Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
         text += f"Importance Threshold: {chat.importance_threshold*100:.0f}%\n\n"
