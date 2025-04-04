@@ -309,22 +309,63 @@ superbot/
 └── README.md
 ```
 
+### Database Migrations
+
+The project uses Alembic for database migrations. All migration files are located in `src/database/migrations/versions/`.
+
+#### Migration Structure
+The database includes the following main tables:
+- `chats` - Information about Telegram chats
+- `messages` - Message history and content
+- `message_threads` - Conversation threads and topics
+- `message_contexts` - Context information for threads
+- `message_tags` - Tags for message categorization
+- `message_stats` - Chat statistics and analytics
+- `styles` - Communication styles for different chat types
+- `tags` - Available message tags
+- `thread_relations` - Relationships between threads
+
+#### Managing Migrations
+
+##### Applying Migrations
+To apply all pending migrations:
+```bash
+alembic -c src/alembic.ini upgrade head
+```
+
+##### Creating New Migrations
+When you make changes to the database models:
+1. Create a new migration:
+```bash
+alembic -c src/alembic.ini revision -m "description of changes"
+```
+2. Edit the generated migration file in `src/database/migrations/versions/`
+3. Apply the migration:
+```bash
+alembic -c src/alembic.ini upgrade head
+```
+
+##### Rolling Back Migrations
+To roll back the last migration:
+```bash
+alembic -c src/alembic.ini downgrade -1
+```
+
+To roll back all migrations:
+```bash
+alembic -c src/alembic.ini downgrade base
+```
+
+##### Important Notes
+- Always backup your database before applying migrations
+- Test migrations in a development environment first
+- Keep migrations atomic and focused on specific changes
+- Document any manual steps required for migration
+
 ### Running Tests
 
 ```bash
 pytest
-```
-
-### Database Migrations
-
-Создание новой миграции:
-```bash
-alembic -c src/alembic.ini revision --autogenerate -m "description"
-```
-
-Применение миграций:
-```bash
-alembic -c src/alembic.ini upgrade head
 ```
 
 ## Contributing
@@ -339,18 +380,23 @@ alembic -c src/alembic.ini upgrade head
 
 To update the bot on Render:
 
-1. Pull latest changes and apply database migrations:
+1. First time setup (if Git repository is not configured):
 ```bash
-cd /opt/render/project/src && git pull origin main && alembic -c alembic.ini upgrade head && sudo systemctl restart superbot
+cd /opt/render/project/src && PYTHONPATH=$PYTHONPATH:. git remote add origin https://github.com/ValentinDobrynin/superbot.git
+```
+
+2. Pull latest changes and apply database migrations:
+```bash
+cd /opt/render/project/src && PYTHONPATH=$PYTHONPATH:. git pull origin main && alembic -c alembic.ini upgrade head && sudo systemctl restart superbot
 ```
 
 Or execute commands separately:
 ```bash
 # 1. Pull latest changes
-cd /opt/render/project/src && git pull origin main
+cd /opt/render/project/src && PYTHONPATH=$PYTHONPATH:. git pull origin main
 
 # 2. Apply database migrations
-alembic -c alembic.ini upgrade head
+PYTHONPATH=$PYTHONPATH:. alembic -c alembic.ini upgrade head
 
 # 3. Restart the service
 sudo systemctl restart superbot
