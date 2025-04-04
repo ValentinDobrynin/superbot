@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -10,6 +10,7 @@ from aiogram.types import Message
 from aiogram.utils.token import validate_token
 from dotenv import load_dotenv
 import os
+from aiogram.client.default import DefaultBotProperties
 
 from .config import settings
 from .handlers import command_handler, message_handler, callback_handler
@@ -32,8 +33,12 @@ if not validate_token(settings.BOT_TOKEN):
     raise ValueError("Invalid bot token")
 
 async def main():
+    """Main function."""
     # Initialize bot and dispatcher
-    bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     
