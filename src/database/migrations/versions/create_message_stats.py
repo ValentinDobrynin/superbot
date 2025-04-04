@@ -1,7 +1,7 @@
 """create message_stats table
 
 Revision ID: create_message_stats
-Revises: 20250404_1140_9606bc129069_remove_is_active_column_from_chats_table
+Revises: 2aec5090bdd8
 Create Date: 2024-04-04 19:35:00.000000
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = 'create_message_stats'
-down_revision: Union[str, None] = '20250404_1140_9606bc129069_remove_is_active_column_from_chats_table'
+down_revision: Union[str, None] = '2aec5090bdd8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
