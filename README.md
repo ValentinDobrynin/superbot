@@ -17,7 +17,7 @@ An intelligent Telegram bot that uses OpenAI's GPT models to provide context-awa
 ## Prerequisites
 
 - Python 3.9+
-- PostgreSQL database
+- PostgreSQL database (version 13 or higher)
 - OpenAI API key
 - Telegram Bot Token
 
@@ -42,15 +42,28 @@ venv\Scripts\activate  # для Windows
 pip install -r requirements.txt
 ```
 
-4. Создайте файл `.env` в корневой директории проекта:
+4. Настройте PostgreSQL:
+```bash
+# Создайте базу данных
+createdb superbot
+
+# Создайте пользователя (если еще не создан)
+createuser -P superbot_user
+# Введите пароль когда попросят
+
+# Предоставьте права
+psql -d superbot -c "GRANT ALL PRIVILEGES ON DATABASE superbot TO superbot_user;"
+```
+
+5. Создайте файл `.env` в корневой директории проекта:
 ```env
 BOT_TOKEN=your_bot_token_here
 OPENAI_API_KEY=your_openai_api_key_here
 OWNER_ID=your_telegram_id_here
-DATABASE_URL=postgresql+asyncpg://user:password@host:port/database
+DATABASE_URL=postgresql+asyncpg://superbot_user:your_password@localhost/superbot
 ```
 
-5. Примените миграции базы данных:
+6. Примените миграции базы данных:
 ```bash
 alembic -c src/alembic.ini upgrade head
 ```
