@@ -128,20 +128,25 @@ async def status_command(message: Message, session: AsyncSession):
     
     status_text = "🤖 Bot Status:\n\n"
     
-    # Add global shutdown status
-    status_text += f"🔒 Global Status: {'🔴 Shutdown' if settings.is_shutdown else '🟢 Active'}\n\n"
+    # Global status
+    if settings.is_shutdown:
+        status_text += "🔴 Global silent mode is enabled\n"
+    else:
+        status_text += "🟢 Bot is running normally\n"
     
+    status_text += f"\n📊 Statistics:\n"
+    status_text += f"• Total chats: {len(chats)}\n"
+    
+    # Process each chat
     for chat in chats:
         logger.info(f"Processing chat: {chat.title} (ID: {chat.chat_id})")
         status_text += f"📱 {chat.title}:\n"
         
-        # Show both active and silent status
-        if not chat.is_active:
-            status_text += "  • Status: ❌ Disabled\n"
-        elif chat.is_silent:
+        # Show silent status
+        if chat.is_silent:
             status_text += "  • Status: 🤫 Silent Mode\n"
         else:
-            status_text += "  • Status: ✅ Active\n"
+            status_text += "  • Status: 🔊 Active\n"
             
         status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
         status_text += f"  • Probability: {chat.response_probability*100:.2f}%\n"
@@ -185,42 +190,23 @@ async def status_command(message: Message, session: AsyncSession):
         # Get hour activity
         hour_stats = {}
         for msg in week_messages:
-            hour = msg.timestamp.strftime("%H:00")
+            hour = msg.timestamp.strftime("%H")
             hour_stats[hour] = hour_stats.get(hour, 0) + 1
         
         # Add statistics to status
-        status_text += f"  • Avg Message Length: {avg_length:.0f} chars\n"
+        status_text += f"  • Messages (24h): {len(day_messages)}\n"
+        status_text += f"  • Messages (week): {len(week_messages)}\n"
+        status_text += f"  • Avg message length: {avg_length:.1f} chars\n"
+        status_text += f"  • Active users: {len(user_stats)}\n"
         
-        if user_stats:
-            status_text += "  • Top Active Users:\n"
-            for user_id, count in sorted(user_stats.items(), key=lambda x: x[1], reverse=True)[:3]:
-                status_text += f"    - User {user_id}: {count} messages\n"
-        
+        # Add most active day and hour
         if day_stats:
-            most_active_day = max(day_stats.items(), key=lambda x: x[1])
-            status_text += f"  • Most Active Day: {most_active_day[0]} ({most_active_day[1]} messages)\n"
-        
-        # 24h stats
-        day_responses = sum(1 for m in day_messages if m.is_bot)
-        day_rate = (day_responses / len(day_messages) * 100) if day_messages else 0
-        status_text += "  • 24h Stats:\n"
-        status_text += f"    - Messages: {len(day_messages)}\n"
-        status_text += f"    - Responses: {day_responses}\n"
-        status_text += f"    - Rate: {day_rate:.1f}%\n"
-        
-        # 7d stats
-        week_responses = sum(1 for m in week_messages if m.is_bot)
-        week_rate = (week_responses / len(week_messages) * 100) if week_messages else 0
-        status_text += "  • 7d Stats:\n"
-        status_text += f"    - Messages: {len(week_messages)}\n"
-        status_text += f"    - Responses: {week_responses}\n"
-        status_text += f"    - Rate: {week_rate:.1f}%\n"
+            most_active_day = max(day_stats.items(), key=lambda x: x[1])[0]
+            status_text += f"  • Most active day: {most_active_day}\n"
         
         if hour_stats:
-            peak_hour = max(hour_stats.items(), key=lambda x: x[1])
-            quiet_hour = min(hour_stats.items(), key=lambda x: x[1])
-            status_text += f"  • Peak Activity: {peak_hour[0]} ({peak_hour[1]} messages)\n"
-            status_text += f"  • Quiet Hours: {quiet_hour[0]}\n"
+            most_active_hour = max(hour_stats.items(), key=lambda x: x[1])[0]
+            status_text += f"  • Most active hour: {most_active_hour}:00\n"
         
         status_text += "\n"
     
