@@ -360,3 +360,5 @@ These commands will:
 1. Update the code to the latest version
 2. Apply any new database migrations
 3. Restart the bot service
+
+Note: The Git repository is located in `/opt/render/project/src/.git`
