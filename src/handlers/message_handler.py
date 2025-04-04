@@ -44,7 +44,7 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
             chat = Chat(
                 chat_id=event.chat.id,
                 title=title,
-                is_silent=False,
+                is_silent=True,  # Set to silent mode by default
                 response_probability=0.5,
                 importance_threshold=0.5,
                 smart_mode=False,
@@ -101,7 +101,7 @@ async def handle_message(message: Message, session: AsyncSession):
         chat = Chat(
             chat_id=message.chat.id,
             title=title,
-            is_silent=False,
+            is_silent=True,  # Set to silent mode by default
             response_probability=0.5,
             importance_threshold=0.5,
             smart_mode=False,
