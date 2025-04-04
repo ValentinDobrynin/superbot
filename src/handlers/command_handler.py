@@ -657,7 +657,7 @@ async def list_chats_command(message: Message, session: AsyncSession):
         chat = await session.get(Chat, chat.id)
         logger.info(f"Refreshed chat from database: {chat.title} (ID: {chat.chat_id})")
         text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
-        text += f"Silent Mode: {'🔇' if chat.is_silent else '🔊'}\n"
+        text += f"Speaking Mode: {'🔊' if not chat.is_silent else '🔇'}\n"
         text += f"Response Probability: {chat.response_probability*100:.0f}%\n"
         text += f"Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
         text += f"Importance Threshold: {chat.importance_threshold*100:.0f}%\n\n"
