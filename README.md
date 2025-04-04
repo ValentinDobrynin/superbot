@@ -264,7 +264,7 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/yourusername/superbot.git
+   git clone https://github.com/ValentinDobrynin/superbot.git
    cd superbot
    ```
 

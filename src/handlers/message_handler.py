@@ -113,8 +113,19 @@ async def handle_message(message: Message, session: AsyncSession):
     
     # If chat is in silent mode, only process the message without responding
     if chat.is_silent:
-        # TODO: Process message for learning/context but don't respond
+        # Process message for learning/context but don't respond
+        await process_message_for_learning(message, chat, session)
         return
         
-    # TODO: Add normal message handling logic here
+    # Process message and generate response
+    await process_message_and_respond(message, chat, session)
+
+async def process_message_for_learning(message: Message, chat: Chat, session: AsyncSession):
+    """Process message for learning and context without generating response."""
+    # TODO: Implement message processing for learning
+    pass
+
+async def process_message_and_respond(message: Message, chat: Chat, session: AsyncSession):
+    """Process message and generate response."""
+    # TODO: Implement message processing and response generation
     pass 

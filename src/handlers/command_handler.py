@@ -43,7 +43,6 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             chat = Chat(
                 chat_id=chat_id,
                 title=chat_info.title,
-                is_active=True,
                 is_silent=False,
                 response_probability=0.5,
                 importance_threshold=0.5,
