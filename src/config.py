@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     MAX_CONTEXT_MESSAGES: int = 5
     
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///valentin.db"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://superbot_user:fGKUr4bbKVXRYusJMepx5GH7WrF5f706@dpg-cvm4r2je5dus73afbbo0-a.oregon-postgres.render.com/superbot")
     
     # Chat types
     CHAT_TYPES: List[str] = ["work", "friendly", "mixed"]
