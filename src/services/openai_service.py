@@ -189,5 +189,4 @@ Message to analyze: {message}"""
         
         Create a comprehensive style guide that captures all these aspects."""
         
-        response = await self._make_request(prompt)
-        return response 
+        return await OpenAIService.chat_completion(prompt, temperature=0.7) 
