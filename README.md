@@ -1,27 +1,70 @@
-# vAIlentin 2.0 Bot
+# SuperBot 🤖
 
-Telegram бот с расширенными возможностями управления и аналитики.
+An intelligent Telegram bot that uses OpenAI's GPT models to provide context-aware responses in group chats. The bot can adapt its communication style based on chat type and learn from conversation history.
 
-## Основные возможности
+## Features
 
-### Управление режимами работы
-- **Глобальный режим** (`/shutdown`) - управление работой бота во всех чатах
-- **Режим чата** (`/setmode`) - включение/выключение бота в конкретном чате
-- **Умный режим** (`/smart_mode`) - адаптивные ответы на основе важности сообщений
+- 🤖 Intelligent responses using OpenAI's GPT models
+- 🎯 Context-aware communication
+- 🎨 Multiple chat styles (work, friendly, mixed)
+- 🔄 Smart mode for adaptive responses
+- 📊 Response probability control
+- 🔍 Importance threshold for message filtering
+- 🔇 Silent mode for learning without responding
+- 📝 Message tagging and threading
+- 📈 Chat analytics and statistics
 
-### Аналитика и статистика
-- **Статус** (`/status`) - детальная статистика по всем чатам
-- **Сводка чата** (`/summ`) - анализ активности и контекста чата
-- **Список чатов** (`/list_chats`) - информация о всех подключенных чатах
-- **Теги** (`/tag`) - управление тегами сообщений
-- **Треды** (`/thread`) - управление темами обсуждений
+## Prerequisites
 
-### Настройка поведения
-- **Вероятность ответа** (`/set_probability`) - настройка частоты ответов
-- **Порог важности** (`/set_importance`) - настройка умного режима
-- **Стиль общения** (`/set_style`) - выбор типа общения (рабочий/дружеский/смешанный)
+- Python 3.9+
+- PostgreSQL database
+- OpenAI API key
+- Telegram Bot Token
 
-## Команды
+## Installation
+
+1. Клонируйте репозиторий:
+```bash
+git clone https://github.com/ValentinDobrynin/superbot.git
+cd superbot
+```
+
+2. Создайте и активируйте виртуальное окружение:
+```bash
+python -m venv venv
+source venv/bin/activate  # для Linux/Mac
+# или
+venv\Scripts\activate  # для Windows
+```
+
+3. Установите зависимости:
+```bash
+pip install -r requirements.txt
+```
+
+4. Создайте файл `.env` в корневой директории проекта:
+```env
+BOT_TOKEN=your_bot_token_here
+OPENAI_API_KEY=your_openai_api_key_here
+OWNER_ID=your_telegram_id_here
+DATABASE_URL=postgresql+asyncpg://user:password@host:port/database
+```
+
+5. Примените миграции базы данных:
+```bash
+alembic -c src/alembic.ini upgrade head
+```
+
+## Usage
+
+1. Запустите бота:
+```bash
+python src/main.py
+```
+
+2. Добавьте бота в групповой чат Telegram
+
+3. Используйте команды для управления ботом:
 
 ### Управление режимами
 
@@ -227,341 +270,54 @@ Focus on identifying consistent **patterns** and **behaviors** based on the prov
    - ❌ Don't: [behavior to avoid]
 ```
 
-## 🚀 Установка и запуск
+## Development
 
-### Предварительные требования
-- Python 3.11+
-- PostgreSQL (для продакшена)
-- Telegram Bot Token (получить у @BotFather)
-- OpenAI API Key
-- Render.com аккаунт
+### Project Structure
 
-### Настройка на Render.com
-
-1. Создайте новый Background Worker на Render.com:
-   - Выберите "New +" -> "Background Worker"
-   - Подключите ваш GitHub репозиторий
-   - Выберите ветку для деплоя (обычно main)
-
-2. Настройте переменные окружения в Render:
-   ```
-   BOT_TOKEN=ваш_токен_бота
-   OWNER_ID=ваш_telegram_id
-   OPENAI_API_KEY=ваш_openai_api_key
-   DATABASE_URL=postgresql://user:password@host:port/database
-   ```
-
-3. Настройте команду запуска:
-   ```
-   python src/main.py
-   ```
-
-4. Настройте автоматический деплой:
-   - Включите Auto-Deploy
-   - Установите Health Check Path (если требуется)
-
-### Локальная разработка
-
-1. Клонируйте репозиторий:
-   ```bash
-   git clone https://github.com/ValentinDobrynin/superbot.git
-   cd superbot
-   ```
-
-2. Создайте виртуальное окружение:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # для Linux/Mac
-   # или
-   .\venv\Scripts\activate  # для Windows
-   ```
-
-3. Установите зависимости:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Создайте файл `.env` с переменными окружения:
-   ```
-   BOT_TOKEN=ваш_токен_бота
-   OWNER_ID=ваш_telegram_id
-   OPENAI_API_KEY=ваш_openai_api_key
-   DATABASE_URL=postgresql://user:password@host:port/database
-   ```
-
-5. Запустите бота:
-   ```bash
-   python src/main.py
-   ```
-
-### Миграции базы данных
-
-При первом запуске на Render или после изменений в моделях:
-
-1. Локально:
-   ```bash
-   alembic upgrade head
-   ```
-
-2. На Render:
-   - Используйте Render Shell для выполнения миграций:
-   ```bash
-   # Подключитесь к Render Shell
-   render shell
-   
-   # Перейдите в директорию проекта
-   cd /opt/render/project/src
-   
-   # Выполните миграции
-   python apply_migrations.py
-   ```
-   
-   Или используйте команду в панели управления Render:
-   ```
-   cd /opt/render/project/src && python apply_migrations.py
-   ```
-
-### Мониторинг и логи
-
-- Логи доступны в панели управления Render
-- Используйте команду `/logs` для просмотра логов в Telegram
-- Настройте уведомления о падении сервиса в Render
-
-## 📋 Требования
-
-### База данных
-- PostgreSQL 14+ (для продакшена)
-- SQLite (для локальной разработки)
-
-### Python зависимости
-- aiogram 3.x
-- SQLAlchemy 2.x
-- Alembic
-- python-dotenv
-- openai
-- psycopg2-binary (для PostgreSQL)
-- python-telegram-bot-pagination
-
-### Внешние сервисы
-- Telegram Bot API
-- OpenAI API
-- Render.com (для хостинга)
-
-- Python 3.9+
-- SQLite (или PostgreSQL)
-- OpenAI API ключ
-- Telegram Bot Token 
-
-## Database Setup
-
-### Local Development
-1. Create a PostgreSQL database
-2. Set up environment variables (copy from `.env.example`):
-   ```bash
-   cp .env.example .env
-   ```
-3. Initialize the database:
-   ```bash
-   python src/database/init_db.py
-   ```
-
-### Render Deployment
-1. Connect to Render Shell:
-   ```bash
-   render shell
-   ```
-2. Navigate to the project directory:
-   ```bash
-   cd /opt/render/project/src
-   ```
-3. Initialize the database:
-   ```bash
-   python src/database/init_db.py
-   ``` 
-
-## Troubleshooting
-
-### Telegram Bot Process Conflict
-
-If you see an error like this when starting the bot:
 ```
-TelegramConflictError: Telegram server says - Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+superbot/
+├── src/
+│   ├── database/
+│   │   ├── models.py
+│   │   └── migrations/
+│   ├── handlers/
+│   │   ├── command_handler.py
+│   │   ├── message_handler.py
+│   │   └── callback_handler.py
+│   ├── services/
+│   │   ├── openai_service.py
+│   │   ├── context_service.py
+│   │   └── notification_service.py
+│   ├── config.py
+│   └── main.py
+├── tests/
+├── alembic.ini
+├── requirements.txt
+└── README.md
 ```
 
-This means that another instance of the bot is already running somewhere. Here's how to fix it:
+### Running Tests
 
-1. Connect to Render Shell:
-   ```bash
-   render shell
-   ```
-
-2. Navigate to the project directory:
-   ```bash
-   cd /opt/render/project/src
-   ```
-
-3. Check for running Python processes:
-   ```bash
-   ps aux | grep python
-   ```
-   Look for processes running `python -m src.main`
-
-4. Stop all bot processes:
-   ```bash
-   pkill -f "python -m src.main"
-   ```
-
-5. Start the bot again:
-   ```bash
-   python -m src.main
-   ```
-
-If the problem persists:
-1. Check the Render dashboard for other running services with this bot
-2. Make sure the bot is not running on your local machine or other servers
-3. Wait a few minutes and try again (sometimes Telegram needs time to release the connection) 
-
-### Database Schema Changes
-
-If you see an error like this:
-```
-ProgrammingError: column chats.last_summary_timestamp does not exist
-```
-
-This means that the database schema is out of sync with the code. To fix this:
-
-#### Option 1: Using Render Shell
-1. Connect to Render Shell:
-   ```bash
-   render shell
-   ```
-
-2. Navigate to the project directory:
-   ```bash
-   cd /opt/render/project/src
-   ```
-
-3. Create and apply migrations:
-   ```bash
-   alembic revision --autogenerate -m "add last_summary_timestamp"
-   alembic upgrade head
-   ```
-
-#### Option 2: Using Render CLI (without Shell)
 ```bash
-render run "cd /opt/render/project/src && alembic upgrade head"
+pytest
 ```
 
-#### Option 3: Add to Build Script
-Add migration commands to your build script in Render dashboard:
+### Database Migrations
+
+Создание новой миграции:
 ```bash
-#!/usr/bin/env bash
-cd /opt/render/project/src
-alembic upgrade head
-python src/main.py
+alembic -c src/alembic.ini revision --autogenerate -m "description"
 ```
 
-Note: Using migrations is safer than resetting the database as it preserves existing data. 
-
-## Database Migrations
-
-We use Alembic for database migrations. Here's how to work with migrations:
-
-### Creating a Migration
-
-1. Connect to Render Shell:
-   ```bash
-   render shell
-   ```
-
-2. Navigate to the project directory:
-   ```bash
-   cd /opt/render/project/src
-   ```
-
-3. Create a new migration:
-   ```bash
-   alembic revision --autogenerate -m "description of changes"
-   ```
-   This will create a new migration file in `src/database/migrations/versions/`
-
-4. Review the generated migration file and make any necessary adjustments
-
-### Applying Migrations
-
-There are two ways to apply migrations:
-
-#### Option 1: Using Render Shell
-
-1. Connect to Render Shell:
-   ```bash
-   render shell
-   ```
-
-2. Navigate to the project directory:
-   ```bash
-   cd /opt/render/project/src
-   ```
-
-3. Apply migrations:
-   ```bash
-   alembic upgrade head
-   ```
-
-#### Option 2: Using Render CLI
-
-1. Install Render CLI:
-   ```bash
-   brew install render
-   ```
-
-2. Login to Render:
-   ```bash
-   render login
-   ```
-
-3. Apply migrations:
-   ```bash
-   render run "cd /opt/render/project/src && alembic upgrade head" --service your-service-name
-   ```
-
-### Rolling Back Migrations
-
-To roll back the last migration:
+Применение миграций:
 ```bash
-alembic downgrade -1
+alembic -c src/alembic.ini upgrade head
 ```
 
-To roll back to a specific version:
-```bash
-alembic downgrade <revision_id>
-```
+## Contributing
 
-### Checking Migration Status
+Пожалуйста, прочитайте [CONTRIBUTING.md](CONTRIBUTING.md) для деталей о нашем коде поведения и процесса для отправки pull requests.
 
-To see the current migration status:
-```bash
-alembic current
-```
+## License
 
-To see migration history:
-```bash
-alembic history
-```
-
-### Troubleshooting
-
-If you see an error like:
-```
-ModuleNotFoundError: No module named 'src'
-```
-
-This means you're trying to run migrations from the wrong directory. Make sure you're in the correct directory:
-```bash
-cd /opt/render/project/src
-```
-
-If you see an error about missing `alembic.ini`:
-1. Make sure you're in the correct directory
-2. Check that the file exists: `ls -la alembic.ini`
-3. If the file is missing, you may need to wait for the deployment to complete 
+Этот проект лицензирован под лицензией MIT - см. файл [LICENSE](LICENSE) для деталей.
