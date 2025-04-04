@@ -339,13 +339,17 @@ alembic -c src/alembic.ini upgrade head
 
 To update the bot on Render:
 
-1. Pull latest changes:
+1. Pull latest changes and restart the service:
 ```bash
-cd /opt/render/project && git pull origin main
+cd /opt/render/project && git pull origin main && sudo systemctl restart superbot
 ```
 
-2. Restart the service:
+Or execute commands separately:
 ```bash
+# 1. Pull latest changes
+cd /opt/render/project && git pull origin main
+
+# 2. Restart the service
 sudo systemctl restart superbot
 ```
 
