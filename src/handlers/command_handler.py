@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.sql import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import re
 
@@ -15,45 +15,44 @@ from ..config import settings
 from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
 from ..services.stats_service import StatsService
+from aiogram.exceptions import TelegramForbiddenError
 
 router = Router()
 logger = logging.getLogger(__name__)
 
 async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
-    """Update chat title from Telegram."""
+    """Update chat title in database."""
     try:
-        logger.info(f"Updating chat title for chat_id: {chat_id}")
         chat_info = await message.bot.get_chat(chat_id)
         logger.info(f"Got chat info from Telegram: {chat_info.title}")
         
         # Get chat from database
-        query = select(Chat).where(Chat.chat_id == chat_id)
-        result = await session.execute(query)
+        result = await session.execute(
+            select(Chat).where(Chat.chat_id == chat_id)
+        )
         chat = result.scalar_one_or_none()
         
         if chat:
-            if chat_info.title != chat.title:
-                logger.info(f"Updating chat title from '{chat.title}' to '{chat_info.title}'")
+            if chat.title != chat_info.title:
                 chat.title = chat_info.title
+                chat.updated_at = datetime.now(timezone.utc)
                 await session.commit()
+                logger.info(f"Updated chat title for chat_id: {chat_id}")
             else:
                 logger.info(f"Chat title is already up to date: {chat.title}")
-        else:
-            # Create new chat if it doesn't exist
-            logger.info(f"Creating new chat with title: {chat_info.title}")
-            chat = Chat(
-                chat_id=chat_id,
-                title=chat_info.title,
-                is_silent=False,
-                response_probability=0.5,
-                importance_threshold=0.5,
-                smart_mode=True,
-                chat_type=ChatType.MIXED
-            )
-            session.add(chat)
+    except TelegramForbiddenError as e:
+        logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
+        # Remove chat from database if bot was kicked
+        result = await session.execute(
+            select(Chat).where(Chat.chat_id == chat_id)
+        )
+        chat = result.scalar_one_or_none()
+        if chat:
+            await session.delete(chat)
             await session.commit()
+            logger.info(f"Removed chat {chat_id} from database as bot was kicked")
     except Exception as e:
-        logger.error(f"Failed to update chat title for chat_id {chat_id}: {e}", exc_info=True)
+        logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
 
 class TestStates(StatesGroup):
     waiting_for_chat = State()
@@ -650,36 +649,7 @@ async def list_chats_command(message: Message, session: AsyncSession):
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
     
-    logger.info("Starting list_chats command")
-    
-    # Get all chats
-    chats_query = select(Chat)
-    logger.info(f"Executing query: {chats_query}")
-    chats_result = await session.execute(chats_query)
-    chats = chats_result.scalars().all()
-    logger.info(f"Found {len(chats)} chats in database")
-    
-    # Update chat titles
-    for chat in chats:
-        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
-        await update_chat_title(message, chat.chat_id, session)
-    
-    if not chats:
-        await message.answer("❌ No chats found")
-        return
-        
-    text = "📋 List of chats:\n\n"
-    for chat in chats:
-        # Refresh chat object from database to get updated title
-        chat = await session.get(Chat, chat.id)
-        logger.info(f"Refreshed chat from database: {chat.title} (ID: {chat.chat_id})")
-        text += f"Chat: {chat.title} (ID: {chat.chat_id})\n"
-        text += f"Speaking Mode: {'🔊' if not chat.is_silent else '🔇'}\n"
-        text += f"Response Probability: {chat.response_probability*100:.0f}%\n"
-        text += f"Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
-        text += f"Importance Threshold: {chat.importance_threshold*100:.0f}%\n\n"
-    
-    await message.answer(text, parse_mode=None)
+    await process_list_chats(message, session)
 
 @router.message(Command("summ"))
 async def summarize_chat_command(message: Message, session: AsyncSession):
@@ -1403,4 +1373,43 @@ async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
     context_service = ContextService(session)
     summary = await context_service.generate_chat_summary(messages)
     
-    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}") 
+    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
+
+async def process_list_chats(message: Message, session: AsyncSession) -> None:
+    """Process /list_chats command."""
+    logger.info("Starting list_chats command")
+    
+    # Get all chats from database
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
+    logger.info(f"Found {len(chats)} chats in database")
+    
+    # Update chat titles
+    for chat in chats:
+        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
+        await update_chat_title(message, chat.chat_id, session)
+    
+    # Get updated chat list
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
+    
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+    
+    # Create message with chat list
+    chat_list = "Chats in database:\n\n"
+    for chat in chats:
+        status = "🔇" if chat.is_silent else "🔊"
+        smart = "🤖" if chat.smart_mode else "💭"
+        chat_title = chat.title if chat.title else f"Chat {chat.chat_id}"
+        chat_list += f"{status}{smart} {chat_title}\n"
+        chat_list += f"ID: {chat.chat_id}\n"
+        chat_list += f"Type: {chat.chat_type}\n"
+        chat_list += f"Response probability: {chat.response_probability:.2f}\n"
+        chat_list += f"Importance threshold: {chat.importance_threshold:.2f}\n"
+        if chat.last_summary_timestamp:
+            chat_list += f"Last summary: {chat.last_summary_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        chat_list += "\n"
+    
+    await message.answer(chat_list) 
