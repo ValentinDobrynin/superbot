@@ -334,3 +334,19 @@ alembic -c src/alembic.ini upgrade head
 ## License
 
 Этот проект лицензирован под лицензией MIT - см. файл [LICENSE](LICENSE) для деталей.
+
+## Update Instructions
+
+To update the bot on Render:
+
+1. Pull latest changes:
+```bash
+cd /opt/render/project && git pull origin main
+```
+
+2. Restart the service:
+```bash
+sudo systemctl restart superbot
+```
+
+These commands will update the bot to the latest version and apply any new changes.
