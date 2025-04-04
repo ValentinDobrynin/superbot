@@ -1398,18 +1398,16 @@ async def process_list_chats(message: Message, session: AsyncSession) -> None:
         return
     
     # Create message with chat list
-    chat_list = "Chats in database:\n\n"
+    chat_list = "📱 Chats in database:\n\n"
     for chat in chats:
         status = "🔇" if chat.is_silent else "🔊"
-        smart = "🤖" if chat.smart_mode else "💭"
+        smart = "❌" if not chat.smart_mode else "✅"
         chat_title = chat.title if chat.title else f"Chat {chat.chat_id}"
-        chat_list += f"{status}{smart} {chat_title}\n"
-        chat_list += f"ID: {chat.chat_id}\n"
-        chat_list += f"Type: {chat.chat_type}\n"
-        chat_list += f"Response probability: {chat.response_probability:.2f}\n"
-        chat_list += f"Importance threshold: {chat.importance_threshold:.2f}\n"
-        if chat.last_summary_timestamp:
-            chat_list += f"Last summary: {chat.last_summary_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        chat_list += f"Chat: {chat_title}\n"
+        chat_list += f"Speaking mode: {status}\n"
+        chat_list += f"Smart mode: {smart}\n"
+        chat_list += f"Response Probability: {chat.response_probability*100:.1f}%\n"
+        chat_list += f"Importance Threshold: {chat.importance_threshold*100:.1f}%\n"
         chat_list += "\n"
     
     await message.answer(chat_list) 

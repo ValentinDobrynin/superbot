@@ -115,8 +115,8 @@ class StatsService:
             top_stickers=sticker_stats.most_common(10),
             top_words=word_stats.most_common(10),
             top_topics=topic_stats.most_common(10),
-            most_active_hour=hour_stats.most_common(1)[0][0] if hour_stats else None,
-            most_active_day=day_stats.most_common(1)[0][0] if day_stats else None,
+            most_active_hour=hour_stats.most_common(1)[0][0] if hour_stats else 0,
+            most_active_day=day_stats.most_common(1)[0][0] if day_stats else "Unknown",
             activity_trend=[{"date": str(date), "count": count} for date, count in activity_trend.items()]
         )
         
