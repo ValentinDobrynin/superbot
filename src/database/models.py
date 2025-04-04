@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table, BigInteger
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table, BigInteger, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, timedelta
@@ -160,4 +160,34 @@ thread_relations = Table(
     Base.metadata,
     Column("thread_id", UUID(as_uuid=True), ForeignKey("message_threads.id"), primary_key=True),
     Column("related_thread_id", UUID(as_uuid=True), ForeignKey("message_threads.id"), primary_key=True)
-) 
+)
+
+class MessageStats(Base):
+    """Statistics for messages in a chat."""
+    __tablename__ = "message_stats"
+    
+    id = Column(Integer, primary_key=True)
+    chat_id = Column(Integer, ForeignKey("chats.id"))
+    period = Column(String)  # 'hour', 'day', 'week', 'month'
+    timestamp = Column(DateTime, default=datetime.now)
+    
+    # Basic stats
+    message_count = Column(Integer, default=0)
+    user_count = Column(Integer, default=0)
+    avg_length = Column(Float, default=0.0)
+    
+    # Content stats
+    emoji_count = Column(Integer, default=0)
+    sticker_count = Column(Integer, default=0)
+    top_emojis = Column(JSON)  # List of [emoji, count] pairs
+    top_stickers = Column(JSON)  # List of [sticker_id, count] pairs
+    top_words = Column(JSON)  # List of [word, count] pairs
+    top_topics = Column(JSON)  # List of [topic, count] pairs
+    
+    # Activity stats
+    most_active_hour = Column(Integer)
+    most_active_day = Column(String)
+    activity_trend = Column(JSON)  # List of daily message counts
+
+    def __repr__(self):
+        return f"<MessageStats(chat_id={self.chat_id}, period={self.period})>" 

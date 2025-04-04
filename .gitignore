@@ -31,11 +31,19 @@ ENV/
 *.swp
 *.swo
 
-# Project specific
+# Logs
+*.log
+logs/
+
+# Local development
 .env
+.env.*
+!.env.example
+
+# Database
 *.db
 *.sqlite3
-*.log
-.pytest_cache/
-.coverage
-htmlcov/ 
+
+# OS
+.DS_Store
+Thumbs.db 

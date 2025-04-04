@@ -14,6 +14,7 @@ from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, M
 from ..config import settings
 from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
+from ..services.stats_service import StatsService
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -125,6 +126,16 @@ async def status_command(message: Message, session: AsyncSession):
         logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
         await update_chat_title(message, chat.chat_id, session)
     
+    # Create keyboard with chat buttons
+    keyboard = []
+    for chat in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"📱 {chat.title}",
+                callback_data=f"stats_{chat.id}"
+            )
+        ])
+    
     status_text = "🤖 Bot Status:\n\n"
     
     # Global status
@@ -133,83 +144,90 @@ async def status_command(message: Message, session: AsyncSession):
     else:
         status_text += "🟢 Bot is running normally\n"
     
-    status_text += f"\n📊 Statistics:\n"
-    status_text += f"• Total chats: {len(chats)}\n"
+    status_text += f"\n📊 Select a chat to view detailed statistics:\n"
     
-    # Process each chat
-    for chat in chats:
-        logger.info(f"Processing chat: {chat.title} (ID: {chat.chat_id})")
-        status_text += f"📱 {chat.title}:\n"
-        
-        # Show silent status
-        if chat.is_silent:
-            status_text += "  • Status: 🤫 Silent Mode\n"
-        else:
-            status_text += "  • Status: 🔊 Active\n"
-            
-        status_text += f"  • Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
-        status_text += f"  • Probability: {chat.response_probability*100:.2f}%\n"
-        status_text += f"  • Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
-        
-        # Get message statistics
-        now = datetime.now()
-        day_ago = now - timedelta(days=1)
-        week_ago = now - timedelta(days=7)
-        
-        # Get messages from last 24h
-        day_messages = await session.execute(
-            select(Message)
-            .where(Message.chat_id == chat.chat_id)
-            .where(Message.timestamp >= day_ago)
-        )
-        day_messages = day_messages.scalars().all()
-        
-        # Get messages from last week
-        week_messages = await session.execute(
-            select(Message)
-            .where(Message.chat_id == chat.chat_id)
-            .where(Message.timestamp >= week_ago)
-        )
-        week_messages = week_messages.scalars().all()
-        
-        # Calculate statistics
-        avg_length = sum(len(m.text) for m in week_messages) / len(week_messages) if week_messages else 0
-        
-        # Get user activity
-        user_stats = {}
-        for msg in week_messages:
-            user_stats[msg.user_id] = user_stats.get(msg.user_id, 0) + 1
-        
-        # Get day activity
-        day_stats = {}
-        for msg in week_messages:
-            day = msg.timestamp.strftime("%A")
-            day_stats[day] = day_stats.get(day, 0) + 1
-        
-        # Get hour activity
-        hour_stats = {}
-        for msg in week_messages:
-            hour = msg.timestamp.strftime("%H")
-            hour_stats[hour] = hour_stats.get(hour, 0) + 1
-        
-        # Add statistics to status
-        status_text += f"  • Messages (24h): {len(day_messages)}\n"
-        status_text += f"  • Messages (week): {len(week_messages)}\n"
-        status_text += f"  • Avg message length: {avg_length:.1f} chars\n"
-        status_text += f"  • Active users: {len(user_stats)}\n"
-        
-        # Add most active day and hour
-        if day_stats:
-            most_active_day = max(day_stats.items(), key=lambda x: x[1])[0]
-            status_text += f"  • Most active day: {most_active_day}\n"
-        
-        if hour_stats:
-            most_active_hour = max(hour_stats.items(), key=lambda x: x[1])[0]
-            status_text += f"  • Most active hour: {most_active_hour}:00\n"
-        
-        status_text += "\n"
+    await message.answer(
+        status_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode=None
+    )
+
+@router.callback_query(lambda c: c.data.startswith("stats_"))
+async def process_stats_selection(callback: CallbackQuery, session: AsyncSession):
+    """Process chat selection for statistics."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can view statistics", show_alert=True)
+        return
     
-    await message.answer(status_text, parse_mode=None)
+    chat_id = int(callback.data.split("_")[1])
+    chat = await session.get(Chat, chat_id)
+    
+    if not chat:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+    
+    # Get statistics
+    stats_service = StatsService()
+    stats = await stats_service.get_stats(chat_id, session)
+    
+    # Format statistics
+    status_text = f"📊 Statistics for {chat.title}:\n\n"
+    
+    # Basic stats
+    status_text += "📈 Basic Statistics:\n"
+    status_text += f"• Messages (week): {stats.message_count}\n"
+    status_text += f"• Active users: {stats.user_count}\n"
+    status_text += f"• Avg message length: {stats.avg_length:.1f} chars\n"
+    
+    # Content stats
+    status_text += "\n🎨 Content Analysis:\n"
+    status_text += f"• Emoji usage: {stats.emoji_count}\n"
+    status_text += f"• Sticker usage: {stats.sticker_count}\n"
+    
+    if stats.top_emojis:
+        status_text += "\n😊 Top Emojis:\n"
+        for emoji, count in stats.top_emojis[:5]:
+            status_text += f"• {emoji}: {count}\n"
+    
+    if stats.top_stickers:
+        status_text += "\n🎯 Top Stickers:\n"
+        for sticker_id, count in stats.top_stickers[:5]:
+            status_text += f"• {sticker_id}: {count}\n"
+    
+    if stats.top_words:
+        status_text += "\n📝 Top Words:\n"
+        for word, count in stats.top_words[:5]:
+            status_text += f"• {word}: {count}\n"
+    
+    if stats.top_topics:
+        status_text += "\n💬 Top Topics:\n"
+        for topic, count in stats.top_topics[:5]:
+            status_text += f"• {topic}: {count}\n"
+    
+    # Activity stats
+    status_text += "\n⏰ Activity Analysis:\n"
+    if stats.most_active_hour is not None:
+        status_text += f"• Most active hour: {stats.most_active_hour:02d}:00\n"
+    if stats.most_active_day:
+        status_text += f"• Most active day: {stats.most_active_day}\n"
+    
+    if stats.activity_trend:
+        status_text += "\n📅 Activity Trend:\n"
+        for day in stats.activity_trend:
+            status_text += f"• {day['date']}: {day['count']} messages\n"
+    
+    # Chat settings
+    status_text += "\n⚙️ Chat Settings:\n"
+    status_text += f"• Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
+    status_text += f"• Probability: {chat.response_probability*100:.2f}%\n"
+    status_text += f"• Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
+    status_text += f"• Silent Mode: {'✅' if chat.is_silent else '❌'}\n"
+    
+    await callback.message.edit_text(
+        status_text,
+        parse_mode=None
+    )
+    await callback.answer()
 
 @router.message(Command("shutdown"))
 async def shutdown_command(message: Message, session: AsyncSession):
