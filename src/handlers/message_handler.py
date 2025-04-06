@@ -131,8 +131,7 @@ async def process_message_for_learning(message: Message, chat: Chat, session: As
         text=message.text,
         timestamp=message.date,
         was_responded=False,
-        date=message.date,
-        chat=chat
+        date=message.date
     )
     session.add(db_message)
     await session.commit()
@@ -152,8 +151,7 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
         text=message.text,
         timestamp=message.date,
         was_responded=False,
-        date=message.date,
-        chat=chat
+        date=message.date
     )
     session.add(db_message)
     await session.commit()
