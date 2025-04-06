@@ -10,6 +10,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy import text
 
 
 # revision identifiers, used by Alembic.
@@ -27,6 +28,10 @@ def upgrade() -> None:
     op.drop_table('tags')
     op.drop_table('message_contexts')
     op.drop_table('styles')
+    
+    # Drop existing enum type if it exists
+    connection = op.get_bind()
+    connection.execute(text('DROP TYPE IF EXISTS chattype CASCADE'))
     
     # Recreate styles table with correct schema
     op.create_table(
@@ -122,6 +127,10 @@ def downgrade() -> None:
     op.drop_table('tags')
     op.drop_table('message_contexts')
     op.drop_table('styles')
+    
+    # Drop enum type
+    connection = op.get_bind()
+    connection.execute(text('DROP TYPE IF EXISTS chattype CASCADE'))
     
     # Recreate tables with previous schema
     # Create styles table
