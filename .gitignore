@@ -33,12 +33,10 @@ ENV/
 
 # Logs
 *.log
-logs/
 
-# Local development
+# Local development settings
 .env
-.env.*
-!.env.example
+.env.local
 
 # Database
 *.db

@@ -28,6 +28,11 @@ def upgrade() -> None:
         sa.Column('name', sa.String(), nullable=True),
         sa.Column('description', sa.String(), nullable=True),
         sa.Column('type', sa.String(), nullable=False),
+        sa.Column('is_silent', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('smart_mode', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('response_probability', sa.Float(), nullable=False, server_default='0.5'),
+        sa.Column('importance_threshold', sa.Float(), nullable=False, server_default='0.5'),
+        sa.Column('last_summary_timestamp', sa.DateTime(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
@@ -52,8 +57,10 @@ def upgrade() -> None:
         sa.Column('chat_id', postgresql.UUID(), nullable=False),
         sa.Column('name', sa.String(), nullable=True),
         sa.Column('description', sa.String(), nullable=True),
+        sa.Column('topic', sa.String(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
+        sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
         sa.ForeignKeyConstraint(['chat_id'], ['chats.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
@@ -62,11 +69,15 @@ def upgrade() -> None:
     op.create_table(
         'messages',
         sa.Column('id', postgresql.UUID(), nullable=False),
-        sa.Column('thread_id', postgresql.UUID(), nullable=False),
-        sa.Column('role', sa.String(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=False),
-        sa.Column('created_at', sa.DateTime(), nullable=False),
-        sa.Column('updated_at', sa.DateTime(), nullable=False),
+        sa.Column('message_id', sa.Integer(), nullable=False),
+        sa.Column('chat_id', postgresql.UUID(), nullable=False),
+        sa.Column('user_id', sa.BigInteger(), nullable=False),
+        sa.Column('text', sa.String(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('was_responded', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('thread_id', postgresql.UUID(), nullable=True),
+        sa.ForeignKeyConstraint(['chat_id'], ['chats.id'], ),
         sa.ForeignKeyConstraint(['thread_id'], ['message_threads.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
@@ -76,11 +87,13 @@ def upgrade() -> None:
         'message_contexts',
         sa.Column('id', postgresql.UUID(), nullable=False),
         sa.Column('message_id', postgresql.UUID(), nullable=False),
-        sa.Column('context_type', sa.String(), nullable=False),
-        sa.Column('content', sa.Text(), nullable=False),
+        sa.Column('thread_id', postgresql.UUID(), nullable=False),
+        sa.Column('context_summary', sa.String(), nullable=True),
+        sa.Column('importance_score', sa.Float(), nullable=False, server_default='0.0'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(['message_id'], ['messages.id'], ),
+        sa.ForeignKeyConstraint(['thread_id'], ['message_threads.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
     
@@ -90,42 +103,57 @@ def upgrade() -> None:
         sa.Column('id', postgresql.UUID(), nullable=False),
         sa.Column('name', sa.String(), nullable=False),
         sa.Column('description', sa.String(), nullable=True),
+        sa.Column('is_system', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
-        sa.Column('updated_at', sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint('id')
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('name')
     )
     
     # Create message_tags table
     op.create_table(
         'message_tags',
+        sa.Column('id', postgresql.UUID(), nullable=False),
         sa.Column('message_id', postgresql.UUID(), nullable=False),
         sa.Column('tag_id', postgresql.UUID(), nullable=False),
+        sa.Column('is_auto', sa.Boolean(), nullable=False, server_default='false'),
+        sa.Column('confidence', sa.Float(), nullable=False, server_default='1.0'),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(['message_id'], ['messages.id'], ),
         sa.ForeignKeyConstraint(['tag_id'], ['tags.id'], ),
-        sa.PrimaryKeyConstraint('message_id', 'tag_id')
+        sa.PrimaryKeyConstraint('id')
     )
     
     # Create thread_relations table
     op.create_table(
         'thread_relations',
-        sa.Column('parent_thread_id', postgresql.UUID(), nullable=False),
-        sa.Column('child_thread_id', postgresql.UUID(), nullable=False),
+        sa.Column('thread_id', postgresql.UUID(), nullable=False),
+        sa.Column('related_thread_id', postgresql.UUID(), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(['child_thread_id'], ['message_threads.id'], ),
-        sa.ForeignKeyConstraint(['parent_thread_id'], ['message_threads.id'], ),
-        sa.PrimaryKeyConstraint('parent_thread_id', 'child_thread_id')
+        sa.ForeignKeyConstraint(['thread_id'], ['message_threads.id'], ),
+        sa.ForeignKeyConstraint(['related_thread_id'], ['message_threads.id'], ),
+        sa.PrimaryKeyConstraint('thread_id', 'related_thread_id')
     )
     
     # Create message_stats table
     op.create_table(
         'message_stats',
         sa.Column('id', postgresql.UUID(), nullable=False),
-        sa.Column('message_id', postgresql.UUID(), nullable=False),
-        sa.Column('tokens_used', sa.Integer(), nullable=False),
-        sa.Column('created_at', sa.DateTime(), nullable=False),
-        sa.Column('updated_at', sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(['message_id'], ['messages.id'], ),
+        sa.Column('chat_id', postgresql.UUID(), nullable=False),
+        sa.Column('period', sa.String(), nullable=False),
+        sa.Column('timestamp', sa.DateTime(timezone=True), nullable=False),
+        sa.Column('message_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('user_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('avg_length', sa.Float(), nullable=False, server_default='0.0'),
+        sa.Column('emoji_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('sticker_count', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('top_emojis', postgresql.JSON(), nullable=True),
+        sa.Column('top_stickers', postgresql.JSON(), nullable=True),
+        sa.Column('top_words', postgresql.JSON(), nullable=True),
+        sa.Column('top_topics', postgresql.JSON(), nullable=True),
+        sa.Column('most_active_hour', sa.Integer(), nullable=True),
+        sa.Column('most_active_day', sa.String(), nullable=True),
+        sa.Column('activity_trend', postgresql.JSON(), nullable=True),
+        sa.ForeignKeyConstraint(['chat_id'], ['chats.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
 

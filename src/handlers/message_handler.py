@@ -24,13 +24,13 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
         logger.info(f"Bot was added to chat {event.chat.id}")
         
         # Get chat from database
-        query = select(Chat).where(Chat.chat_id == event.chat.id)
+        query = select(Chat).where(Chat.name == event.chat.title)
         result = await session.execute(query)
         chat = result.scalar_one_or_none()
         
         if not chat:
             # Create new chat
-            logger.info(f"Creating new chat with ID {event.chat.id}")
+            logger.info(f"Creating new chat with title {event.chat.title}")
             logger.info(f"Chat info from event: title='{event.chat.title}', type='{event.chat.type}'")
             
             # Get chat info from Telegram
@@ -43,19 +43,15 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
                 title = event.chat.title or "Unknown Chat"
             
             chat = Chat(
-                chat_id=event.chat.id,
-                title=title,
-                is_silent=True,  # Set to silent mode by default
-                response_probability=0.5,
-                importance_threshold=0.5,
-                smart_mode=False,
-                chat_type=ChatType.MIXED
+                name=title,
+                description=f"Telegram chat {event.chat.id}",
+                type="MIXED"  # Default type
             )
             session.add(chat)
             await session.commit()
-            logger.info(f"Created new chat: {chat.title} (ID: {chat.chat_id})")
+            logger.info(f"Created new chat: {chat.name}")
         else:
-            logger.info(f"Chat already exists in database: {chat.title} (ID: {chat.chat_id})")
+            logger.info(f"Chat already exists in database: {chat.name}")
         
     # Update chat title if it changed
     if event.chat.title != event.old_chat.title:
@@ -81,13 +77,13 @@ async def handle_message(message: Message, session: AsyncSession):
         return
         
     # Get chat settings
-    query = select(Chat).where(Chat.chat_id == message.chat.id)
+    query = select(Chat).where(Chat.name == message.chat.title)
     result = await session.execute(query)
     chat = result.scalar_one_or_none()
     
     # Create chat if it doesn't exist
     if not chat:
-        logger.info(f"Creating new chat with ID {message.chat.id}")
+        logger.info(f"Creating new chat with title {message.chat.title}")
         logger.info(f"Chat info from message: title='{message.chat.title}', type='{message.chat.type}'")
         
         # Get chat info from Telegram
@@ -100,17 +96,13 @@ async def handle_message(message: Message, session: AsyncSession):
             title = message.chat.title or "Unknown Chat"
         
         chat = Chat(
-            chat_id=message.chat.id,
-            title=title,
-            is_silent=True,  # Set to silent mode by default
-            response_probability=0.5,
-            importance_threshold=0.5,
-            smart_mode=False,
-            chat_type=ChatType.MIXED
+            name=title,
+            description=f"Telegram chat {message.chat.id}",
+            type="MIXED"  # Default type
         )
         session.add(chat)
         await session.commit()
-        logger.info(f"Created new chat: {chat.title} (ID: {chat.chat_id})")
+        logger.info(f"Created new chat: {chat.name}")
     
     # If chat is in silent mode, only process the message without responding
     if chat.is_silent:
@@ -129,9 +121,8 @@ async def process_message_for_learning(message: Message, chat: Chat, session: As
         chat_id=chat.id,
         user_id=message.from_user.id,
         text=message.text,
-        timestamp=message.date,
-        was_responded=False,
-        date=message.date
+        created_at=message.date,
+        was_responded=False
     )
     session.add(db_message)
     await session.commit()
@@ -149,9 +140,8 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
         chat_id=chat.id,
         user_id=message.from_user.id,
         text=message.text,
-        timestamp=message.date,
-        was_responded=False,
-        date=message.date
+        created_at=message.date,
+        was_responded=False
     )
     session.add(db_message)
     await session.commit()

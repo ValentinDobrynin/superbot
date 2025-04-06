@@ -15,17 +15,17 @@ class ChatType(enum.Enum):
 class Chat(Base):
     __tablename__ = "chats"
     
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(BigInteger, unique=True, nullable=False)
-    title = Column(String, nullable=False)
-    chat_type = Column(Enum(ChatType), default=ChatType.MIXED)
-    is_silent = Column(Boolean, default=False)  # True means bot reads but doesn't respond
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+    type = Column(String, nullable=False)  # Using string instead of enum
+    is_silent = Column(Boolean, default=True)
+    smart_mode = Column(Boolean, default=False)
     response_probability = Column(Float, default=0.5)
-    smart_mode = Column(Boolean, default=True)
-    importance_threshold = Column(Float, default=0.5)  # Threshold for smart mode
+    importance_threshold = Column(Float, default=0.5)
+    last_summary_timestamp = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_summary_timestamp = Column(DateTime, nullable=True)
     
     messages = relationship("Message", back_populates="chat")
     threads = relationship("MessageThread", back_populates="chat")
@@ -36,7 +36,7 @@ class Chat(Base):
         yesterday = datetime.utcnow() - timedelta(days=1)
         stats_query = select(Message).where(
             Message.chat_id == self.id,
-            Message.timestamp >= yesterday
+            Message.created_at >= yesterday
         )
         result = await session.execute(stats_query)
         messages = result.scalars().all()
@@ -63,8 +63,10 @@ class MessageThread(Base):
     __tablename__ = "message_threads"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    chat_id = Column(Integer, ForeignKey("chats.id"))
-    topic = Column(String)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"))
+    name = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+    topic = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
@@ -85,12 +87,13 @@ class Message(Base):
     """Message from a chat."""
     __tablename__ = "messages"
     
-    id = Column(Integer, primary_key=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     message_id = Column(Integer, nullable=False)
-    chat_id = Column(BigInteger, ForeignKey("chats.id"))
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"))
     user_id = Column(BigInteger, nullable=False)
     text = Column(String, nullable=True)
-    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     was_responded = Column(Boolean, default=False)
     thread_id = Column(UUID(as_uuid=True), ForeignKey("message_threads.id"), nullable=True)
     
@@ -175,7 +178,7 @@ class MessageStats(Base):
     __tablename__ = "message_stats"
     
     id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, ForeignKey("chats.id"))
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"))
     period = Column(String)  # 'hour', 'day', 'week', 'month'
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     

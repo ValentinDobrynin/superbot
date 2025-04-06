@@ -25,7 +25,7 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
     try:
         # Get chat from database first
         result = await session.execute(
-            select(Chat).where(Chat.chat_id == chat_id)
+            select(Chat).where(Chat.name == message.chat.title)
         )
         chat = result.scalar_one_or_none()
         
@@ -37,13 +37,13 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             chat_info = await message.bot.get_chat(chat_id)
             logger.info(f"Got chat info from Telegram: {chat_info.title}")
             
-            if chat.title != chat_info.title:
-                chat.title = chat_info.title
+            if chat.name != chat_info.title:
+                chat.name = chat_info.title
                 chat.updated_at = datetime.now(timezone.utc)
                 await session.commit()
                 logger.info(f"Updated chat title for chat_id: {chat_id}")
             else:
-                logger.info(f"Chat title is already up to date: {chat.title}")
+                logger.info(f"Chat title is already up to date: {chat.name}")
         except TelegramForbiddenError as e:
             logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
             # Remove chat from database if bot was kicked
@@ -124,7 +124,7 @@ async def status_command(message: Message, session: AsyncSession):
     
     # Update chat titles
     for chat in chats:
-        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
+        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.name})")
         await update_chat_title(message, chat.chat_id, session)
     
     # Create keyboard with chat buttons
@@ -132,7 +132,7 @@ async def status_command(message: Message, session: AsyncSession):
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"📱 {chat.title}",
+                text=f"📱 {chat.name}",
                 callback_data=f"stats_{chat.id}"
             )
         ])
@@ -172,7 +172,7 @@ async def process_stats_selection(callback: CallbackQuery, session: AsyncSession
     stats = await stats_service.get_stats(chat_id, session)
     
     # Format statistics
-    status_text = f"📊 Statistics for {chat.title}:\n\n"
+    status_text = f"📊 Statistics for {chat.name}:\n\n"
     
     # Basic stats
     status_text += "📈 Basic Statistics:\n"
@@ -219,7 +219,7 @@ async def process_stats_selection(callback: CallbackQuery, session: AsyncSession
     
     # Chat settings
     status_text += "\n⚙️ Chat Settings:\n"
-    status_text += f"• Type: {chat.chat_type.value if chat.chat_type else 'Not set'}\n"
+    status_text += f"• Type: {chat.type}\n"
     status_text += f"• Probability: {chat.response_probability*100:.2f}%\n"
     status_text += f"• Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
     status_text += f"• Silent Mode: {'✅' if chat.is_silent else '❌'}\n"
@@ -260,361 +260,377 @@ async def shutdown_command(message: Message, session: AsyncSession):
 
 @router.message(Command("setmode"))
 async def setmode_command(message: Message, session: AsyncSession):
-    """Toggle silent mode in chats (bot reads but doesn't respond)."""
+    """Toggle silent mode in a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
+        
     # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
-    
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+        
+    # Create keyboard with chat options
     keyboard = []
     for chat in chats:
-        status = "🔇" if chat.is_silent else "🔊"
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{status} {chat.title}",
+                text=f"{'🔇' if chat.is_silent else '🔊'} {chat.name}",
                 callback_data=f"toggle_silent_{chat.id}"
             )
         ])
     
-    await message.answer(
-        "Select chat to toggle silent mode (🔇 = silent mode):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer("Select a chat to toggle silent mode:", reply_markup=markup)
 
 @router.callback_query(lambda c: c.data.startswith("toggle_silent_"))
 async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
-    """Process toggle silent mode callback."""
+    """Process silent mode toggle callback."""
     if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can toggle silent mode", show_alert=True)
+        await callback.answer("You are not authorized to use this command.")
         return
-    
-    chat_id = int(callback.data.split("_")[2])
-    chat = await session.get(Chat, chat_id)
-    
-    if chat:
-        chat.is_silent = not chat.is_silent
-        await session.commit()
         
-        # Update button text
-        status = "🔇" if chat.is_silent else "🔊"
-        keyboard = callback.message.reply_markup.inline_keyboard
-        for row in keyboard:
-            for button in row:
-                if button.callback_data == callback.data:
-                    button.text = f"{status} {chat.title}"
-                    break
+    chat_id = callback.data.split("_")[2]
+    
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
+    
+    if not chat:
+        await callback.answer("Chat not found in database.")
+        return
         
-        await callback.message.edit_reply_markup(
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        await callback.answer(f"Silent mode {'enabled' if chat.is_silent else 'disabled'} for {chat.title}")
-    else:
-        await callback.answer("Chat not found", show_alert=True)
+    # Toggle silent mode
+    chat.is_silent = not chat.is_silent
+    await session.commit()
+    
+    # Update keyboard
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
+    
+    keyboard = []
+    for c in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{'🔇' if c.is_silent else '🔊'} {c.name}",
+                callback_data=f"toggle_silent_{c.id}"
+            )
+        ])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(
+        "Select a chat to toggle silent mode:",
+        reply_markup=markup
+    )
+    
+    await callback.answer(f"Silent mode {'enabled' if chat.is_silent else 'disabled'} for {chat.name}")
 
 @router.message(Command("set_probability"))
 async def set_probability_command(message: Message, session: AsyncSession):
     """Set response probability for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
+        
     # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
-    
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+        
+    # Create keyboard with chat options
     keyboard = []
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"🎯 {chat.title} ({chat.response_probability*100:.0f}%)",
+                text=f"{chat.name} ({chat.response_probability:.2f})",
                 callback_data=f"select_chat_prob_{chat.id}"
             )
         ])
     
-    await message.answer(
-        "Select chat to set response probability:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer("Select a chat to set response probability:", reply_markup=markup)
 
 @router.callback_query(F.data.startswith("select_chat_prob_"))
 async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSession):
-    """Select chat for probability setting."""
+    """Process chat selection for probability setting."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
+        
+    chat_id = callback.data.split("_")[3]
     
-    chat_id = int(callback.data.split("_")[3])
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
     
-    # Create probability selection keyboard
+    if not chat:
+        await callback.answer("Chat not found in database.")
+        return
+        
+    # Create keyboard with probability options
     keyboard = [
         [
-            InlineKeyboardButton(
-                text="25%",
-                callback_data=f"set_prob_{chat_id}_0.25"
-            ),
-            InlineKeyboardButton(
-                text="50%",
-                callback_data=f"set_prob_{chat_id}_0.5"
-            )
+            InlineKeyboardButton(text="0.1", callback_data=f"set_prob_{chat_id}_0.1"),
+            InlineKeyboardButton(text="0.3", callback_data=f"set_prob_{chat_id}_0.3"),
+            InlineKeyboardButton(text="0.5", callback_data=f"set_prob_{chat_id}_0.5")
         ],
         [
-            InlineKeyboardButton(
-                text="75%",
-                callback_data=f"set_prob_{chat_id}_0.75"
-            ),
-            InlineKeyboardButton(
-                text="100%",
-                callback_data=f"set_prob_{chat_id}_1.0"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Custom",
-                callback_data=f"custom_prob_{chat_id}"
-            )
+            InlineKeyboardButton(text="0.7", callback_data=f"set_prob_{chat_id}_0.7"),
+            InlineKeyboardButton(text="0.9", callback_data=f"set_prob_{chat_id}_0.9"),
+            InlineKeyboardButton(text="Custom", callback_data=f"custom_prob_{chat_id}")
         ]
     ]
     
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await callback.message.edit_text(
-        "Select response probability:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        f"Select response probability for {chat.name}:",
+        reply_markup=markup
     )
 
 @router.callback_query(F.data.startswith("set_prob_"))
 async def set_chat_probability(callback: CallbackQuery, session: AsyncSession):
-    """Set chat probability."""
+    """Process probability setting callback."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
-    
-    _, _, chat_id, prob = callback.data.split("_")
-    chat_id = int(chat_id)
-    probability = float(prob)
-    
-    # Update chat probability
-    chat = await session.get(Chat, chat_id)
-    if chat:
-        chat.response_probability = probability
-        await session.commit()
         
-        await callback.message.edit_text(
-            f"Response probability for {chat.title} set to {probability*100:.0f}%",
-            reply_markup=None
-        )
+    _, chat_id, prob = callback.data.split("_")
+    prob = float(prob)
+    
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
+    
+    if not chat:
+        await callback.answer("Chat not found in database.")
+        return
+        
+    # Update probability
+    chat.response_probability = prob
+    await session.commit()
+    
+    await callback.message.edit_text(
+        f"Response probability set to {prob:.2f} for {chat.name}"
+    )
+    await callback.answer("Probability updated")
 
 @router.callback_query(F.data.startswith("custom_prob_"))
 async def custom_probability(callback: CallbackQuery, state: FSMContext):
     """Handle custom probability input."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
-    
-    chat_id = int(callback.data.split("_")[2])
+        
+    chat_id = callback.data.split("_")[2]
     await state.set_state(TestStates.waiting_for_probability)
     await state.update_data(chat_id=chat_id)
     
     await callback.message.edit_text(
-        "Enter custom probability (0-100):",
-        reply_markup=None
+        "Enter custom probability (0.0 to 1.0):"
     )
 
 @router.message(TestStates.waiting_for_probability)
 async def process_custom_probability(message: Message, state: FSMContext, session: AsyncSession):
     """Process custom probability input."""
     if message.from_user.id != settings.OWNER_ID:
+        await message.answer("You are not authorized to use this command.")
         return
-    
+        
     try:
-        probability = float(message.text) / 100
-        if not 0 <= probability <= 1:
-            await message.answer("❌ Probability must be between 0 and 100")
-            await state.clear()
-            return
+        prob = float(message.text)
+        if not 0 <= prob <= 1:
+            raise ValueError("Probability must be between 0 and 1")
             
         data = await state.get_data()
-        chat_id = data.get("chat_id")
+        chat_id = data["chat_id"]
         
-        chat = await session.get(Chat, chat_id)
-        if chat:
-            chat.response_probability = probability
-            await session.commit()
-            await message.answer(f"✅ Response probability set to {probability*100:.0f}% for {chat.title}")
-        else:
-            await message.answer("❌ Chat not found")
+        # Get chat from database
+        result = await session.execute(select(Chat).where(Chat.id == chat_id))
+        chat = result.scalar_one_or_none()
+        
+        if not chat:
+            await message.answer("Chat not found in database.")
+            return
+            
+        # Update probability
+        chat.response_probability = prob
+        await session.commit()
+        
+        await message.answer(f"Response probability set to {prob:.2f} for {chat.name}")
     except ValueError:
-        await message.answer("❌ Please enter a valid number")
-    
-    await state.clear()
+        await message.answer("Please enter a valid number between 0 and 1.")
+    finally:
+        await state.clear()
 
 @router.message(Command("set_importance"))
 async def set_importance_command(message: Message, session: AsyncSession):
     """Set importance threshold for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
+        
     # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
-    
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+        
+    # Create keyboard with chat options
     keyboard = []
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"🎯 {chat.title} ({chat.importance_threshold*100:.0f}%)",
+                text=f"{chat.name} ({chat.importance_threshold:.2f})",
                 callback_data=f"select_chat_imp_{chat.id}"
             )
         ])
     
-    await message.answer(
-        "Select chat to set importance threshold:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer("Select a chat to set importance threshold:", reply_markup=markup)
 
 @router.callback_query(F.data.startswith("select_chat_imp_"))
 async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSession):
-    """Select chat for importance setting."""
+    """Process chat selection for importance setting."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
+        
+    chat_id = callback.data.split("_")[3]
     
-    chat_id = int(callback.data.split("_")[3])
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
     
-    # Create importance selection keyboard
+    if not chat:
+        await callback.answer("Chat not found in database.")
+        return
+        
+    # Create keyboard with importance options
     keyboard = [
         [
-            InlineKeyboardButton(
-                text="25%",
-                callback_data=f"set_imp_{chat_id}_0.25"
-            ),
-            InlineKeyboardButton(
-                text="50%",
-                callback_data=f"set_imp_{chat_id}_0.5"
-            )
+            InlineKeyboardButton(text="0.1", callback_data=f"set_imp_{chat_id}_0.1"),
+            InlineKeyboardButton(text="0.3", callback_data=f"set_imp_{chat_id}_0.3"),
+            InlineKeyboardButton(text="0.5", callback_data=f"set_imp_{chat_id}_0.5")
         ],
         [
-            InlineKeyboardButton(
-                text="75%",
-                callback_data=f"set_imp_{chat_id}_0.75"
-            ),
-            InlineKeyboardButton(
-                text="100%",
-                callback_data=f"set_imp_{chat_id}_1.0"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Custom",
-                callback_data=f"custom_imp_{chat_id}"
-            )
+            InlineKeyboardButton(text="0.7", callback_data=f"set_imp_{chat_id}_0.7"),
+            InlineKeyboardButton(text="0.9", callback_data=f"set_imp_{chat_id}_0.9"),
+            InlineKeyboardButton(text="Custom", callback_data=f"custom_imp_{chat_id}")
         ]
     ]
     
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await callback.message.edit_text(
-        "Select importance threshold:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        f"Select importance threshold for {chat.name}:",
+        reply_markup=markup
     )
 
 @router.callback_query(F.data.startswith("set_imp_"))
 async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
-    """Set chat importance threshold."""
+    """Process importance setting callback."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
-    
-    _, _, chat_id, imp = callback.data.split("_")
-    chat_id = int(chat_id)
-    importance = float(imp)
-    
-    # Update chat importance
-    chat = await session.get(Chat, chat_id)
-    if chat:
-        chat.importance_threshold = importance
-        await session.commit()
         
-        await callback.message.edit_text(
-            f"Importance threshold for {chat.title} set to {importance*100:.0f}%",
-            reply_markup=None
-        )
+    _, chat_id, imp = callback.data.split("_")
+    imp = float(imp)
+    
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
+    
+    if not chat:
+        await callback.answer("Chat not found in database.")
+        return
+        
+    # Update importance threshold
+    chat.importance_threshold = imp
+    await session.commit()
+    
+    await callback.message.edit_text(
+        f"Importance threshold set to {imp:.2f} for {chat.name}"
+    )
+    await callback.answer("Importance threshold updated")
 
 @router.callback_query(F.data.startswith("custom_imp_"))
 async def custom_importance(callback: CallbackQuery, state: FSMContext):
     """Handle custom importance input."""
     if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("You are not authorized to use this command.")
         return
-    
-    chat_id = int(callback.data.split("_")[2])
+        
+    chat_id = callback.data.split("_")[2]
     await state.set_state(TestStates.waiting_for_importance)
     await state.update_data(chat_id=chat_id)
     
     await callback.message.edit_text(
-        "Enter custom importance threshold (0-100):",
-        reply_markup=None
+        "Enter custom importance threshold (0.0 to 1.0):"
     )
 
 @router.message(TestStates.waiting_for_importance)
 async def process_custom_importance(message: Message, state: FSMContext, session: AsyncSession):
     """Process custom importance input."""
     if message.from_user.id != settings.OWNER_ID:
+        await message.answer("You are not authorized to use this command.")
         return
-    
+        
     try:
-        importance = float(message.text) / 100
-        if not 0 <= importance <= 1:
-            await message.answer("❌ Importance must be between 0 and 100")
-            await state.clear()
-            return
+        imp = float(message.text)
+        if not 0 <= imp <= 1:
+            raise ValueError("Importance threshold must be between 0 and 1")
             
         data = await state.get_data()
-        chat_id = data.get("chat_id")
+        chat_id = data["chat_id"]
         
-        chat = await session.get(Chat, chat_id)
-        if chat:
-            chat.importance_threshold = importance
-            await session.commit()
-            await message.answer(f"✅ Importance threshold set to {importance*100:.0f}% for {chat.title}")
-        else:
-            await message.answer("❌ Chat not found")
+        # Get chat from database
+        result = await session.execute(select(Chat).where(Chat.id == chat_id))
+        chat = result.scalar_one_or_none()
+        
+        if not chat:
+            await message.answer("Chat not found in database.")
+            return
+            
+        # Update importance threshold
+        chat.importance_threshold = imp
+        await session.commit()
+        
+        await message.answer(f"Importance threshold set to {imp:.2f} for {chat.name}")
     except ValueError:
-        await message.answer("❌ Please enter a valid number")
-    
-    await state.clear()
+        await message.answer("Please enter a valid number between 0 and 1.")
+    finally:
+        await state.clear()
 
 @router.message(Command("smart_mode"))
 async def smart_mode_command(message: Message, session: AsyncSession):
-    """Toggle smart mode for a chat."""
+    """Toggle smart mode in a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
+        
     # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
-    
-    # Create inline keyboard
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+        
+    # Create keyboard with chat options
     keyboard = []
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"{'✅' if chat.smart_mode else '❌'} {chat.title}",
+                text=f"{'🤖' if chat.smart_mode else '💭'} {chat.name}",
                 callback_data=f"smart_mode_{chat.id}"
             )
         ])
     
-    await message.answer(
-        "Select a chat to toggle smart mode:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer("Select a chat to toggle smart mode:", reply_markup=markup)
 
 @router.callback_query(lambda c: c.data.startswith("smart_mode_"))
 async def process_smart_mode_callback(callback_query: CallbackQuery, session: AsyncSession):
@@ -622,35 +638,48 @@ async def process_smart_mode_callback(callback_query: CallbackQuery, session: As
     if callback_query.from_user.id != settings.OWNER_ID:
         await callback_query.answer("You are not authorized to use this command.")
         return
+        
+    chat_id = callback_query.data.split("_")[2]
     
-    chat_id = int(callback_query.data.split("_")[2])
+    # Get chat from database
+    result = await session.execute(select(Chat).where(Chat.id == chat_id))
+    chat = result.scalar_one_or_none()
     
-    # Get chat
-    chat = await session.get(Chat, chat_id)
     if not chat:
-        await callback_query.answer("Chat not found.")
+        await callback_query.answer("Chat not found in database.")
         return
-    
+        
     # Toggle smart mode
     chat.smart_mode = not chat.smart_mode
     await session.commit()
     
-    # Update button text
-    keyboard = callback_query.message.reply_markup
-    for row in keyboard.inline_keyboard:
-        for button in row:
-            if button.callback_data == callback_query.data:
-                button.text = f"{'✅' if chat.smart_mode else '❌'} {chat.title}"
+    # Update keyboard
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    await callback_query.message.edit_reply_markup(reply_markup=keyboard)
-    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.title}")
+    keyboard = []
+    for c in chats:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{'🤖' if c.smart_mode else '💭'} {c.name}",
+                callback_data=f"smart_mode_{c.id}"
+            )
+        ])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback_query.message.edit_text(
+        "Select a chat to toggle smart mode:",
+        reply_markup=markup
+    )
+    
+    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.name}")
 
 @router.message(Command("list_chats"))
 async def list_chats_command(message: Message, session: AsyncSession):
-    """List all chats."""
+    """List all chats with their settings."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-    
+        
     await process_list_chats(message, session)
 
 @router.message(Command("summ"))
@@ -671,7 +700,7 @@ async def summarize_chat_command(message: Message, session: AsyncSession):
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"📊 {chat.title}",
+                text=f"📊 {chat.name}",
                 callback_data=f"summ_chat_{chat.id}"
             )
         ])
@@ -718,7 +747,7 @@ async def select_summary_period(callback: CallbackQuery, session: AsyncSession):
     ]
     
     await callback.message.edit_text(
-        f"Select summary period for {chat.title}:",
+        f"Select summary period for {chat.name}:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
@@ -766,7 +795,7 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     
     if not messages:
         await callback.message.edit_text(
-            f"No messages found in {chat.title} for the selected period.",
+            f"No messages found in {chat.name} for the selected period.",
             reply_markup=None
         )
         return
@@ -832,7 +861,7 @@ async def process_custom_hours(message: Message, state: FSMContext, session: Asy
         chat.last_summary_timestamp = datetime.now()
         await session.commit()
         
-        await message.answer(f"📊 Summary for {chat.title} (last {hours:.1f} hours):\n\n{summary}")
+        await message.answer(f"�� Summary for {chat.name} (last {hours:.1f} hours):\n\n{summary}")
     except ValueError:
         await message.answer("❌ Please enter a valid number")
     
@@ -1021,7 +1050,7 @@ async def test_command(message: Message, session: AsyncSession):
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"📱 {chat.title}",
+                text=f"📱 {chat.name}",
                 callback_data=f"test_chat_{chat.id}"
             )
         ])
@@ -1048,11 +1077,11 @@ async def process_test_chat(callback: CallbackQuery, session: AsyncSession):
             title = chat_info.title
         except Exception as e:
             logger.error(f"Failed to get chat info: {e}", exc_info=True)
-            title = chat.title or "Unknown Chat"
+            title = chat.name or "Unknown Chat"
         
         # Update chat title if needed
-        if title != chat.title:
-            chat.title = title
+        if title != chat.name:
+            chat.name = title
             await session.commit()
         
         # Send test message
@@ -1061,7 +1090,7 @@ async def process_test_chat(callback: CallbackQuery, session: AsyncSession):
             text="🤖 Test message from bot"
         )
         
-        await callback.answer(f"Test message sent to {chat.title}")
+        await callback.answer(f"Test message sent to {chat.name}")
     else:
         await callback.answer("Chat not found", show_alert=True)
 
@@ -1284,7 +1313,7 @@ async def set_style_command(message: Message, session: AsyncSession):
     for chat in chats:
         keyboard.append([
             InlineKeyboardButton(
-                text=f"🎯 {chat.title}",
+                text=f"🎯 {chat.name}",
                 callback_data=f"select_chat_{chat.id}"
             )
         ])
@@ -1339,11 +1368,11 @@ async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
     # Update chat style
     chat = await session.get(Chat, chat_id)
     if chat:
-        chat.chat_type = ChatType(style)
+        chat.type = style
         await session.commit()
         
         await callback.message.edit_text(
-            f"Style for {chat.title} set to {style}",
+            f"Style for {chat.name} set to {style}",
             reply_markup=None
         )
 
@@ -1380,41 +1409,28 @@ async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
     context_service = ContextService(session)
     summary = await context_service.generate_chat_summary(messages)
     
-    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
+    await callback.message.answer(f"�� Summary for {chat.name}:\n\n{summary}")
 
 async def process_list_chats(message: Message, session: AsyncSession) -> None:
-    """Process /list_chats command."""
-    logger.info("Starting list_chats command")
-    
-    # Get all chats from database
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    logger.info(f"Found {len(chats)} chats in database")
-    
-    # Update chat titles
-    for chat in chats:
-        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.title})")
-        await update_chat_title(message, chat.chat_id, session)
-    
-    # Get updated chat list
+    """Process listing of all chats."""
+    # Get all chats
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
     
     if not chats:
         await message.answer("No chats found in database.")
         return
-    
-    # Create message with chat list
-    chat_list = "📱 Chats in database:\n\n"
+        
+    # Create message with chat settings
+    text = "📊 Chat Settings:\n\n"
     for chat in chats:
-        status = "🔇" if chat.is_silent else "🔊"
-        smart = "❌" if not chat.smart_mode else "✅"
-        chat_title = chat.title if chat.title else f"Chat {chat.chat_id}"
-        chat_list += f"Chat: {chat_title}\n"
-        chat_list += f"Speaking mode: {status}\n"
-        chat_list += f"Smart mode: {smart}\n"
-        chat_list += f"Response Probability: {chat.response_probability*100:.1f}%\n"
-        chat_list += f"Importance Threshold: {chat.importance_threshold*100:.1f}%\n"
-        chat_list += "\n"
+        text += f"Chat: {chat.name}\n"
+        text += f"Type: {chat.type}\n"
+        text += f"Silent Mode: {'🔇' if chat.is_silent else '🔊'}\n"
+        text += f"Smart Mode: {'🤖' if chat.smart_mode else '💭'}\n"
+        text += f"Response Probability: {chat.response_probability:.2f}\n"
+        text += f"Importance Threshold: {chat.importance_threshold:.2f}\n"
+        text += f"Created: {chat.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        text += f"Updated: {chat.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     
-    await message.answer(chat_list) 
+    await message.answer(text) 
