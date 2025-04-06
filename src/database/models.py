@@ -82,21 +82,22 @@ class MessageThread(Base):
     )
 
 class Message(Base):
+    """Message from a chat."""
     __tablename__ = "messages"
     
     id = Column(Integer, primary_key=True)
-    message_id = Column(Integer)
+    message_id = Column(Integer, nullable=False)
     chat_id = Column(BigInteger, ForeignKey("chats.id"))
-    user_id = Column(Integer)
-    text = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(BigInteger, nullable=False)
+    text = Column(String, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     was_responded = Column(Boolean, default=False)
-    thread_id = Column(UUID(as_uuid=True), ForeignKey("message_threads.id"), nullable=True)
+    thread_id = Column(Integer, ForeignKey("message_threads.id"), nullable=True)
     
-    # Relationships
     chat = relationship("Chat", back_populates="messages")
     thread = relationship("MessageThread", back_populates="messages")
     tags = relationship("MessageTag", back_populates="message")
+    context = relationship("MessageContext", back_populates="message", uselist=False)
     
     @property
     def tag_names(self) -> list[str]:

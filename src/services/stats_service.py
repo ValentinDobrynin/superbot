@@ -49,78 +49,78 @@ class StatsService:
         now = datetime.now(timezone.utc)
         week_ago = now - timedelta(days=7)
         
-        # Get messages
+        # Get messages for the period
         messages = await session.execute(
             select(Message)
             .where(Message.chat_id == chat_id)
             .where(Message.timestamp >= week_ago)
+            .order_by(Message.timestamp)
         )
         messages = messages.scalars().all()
         
-        # Basic stats
-        message_count = len(messages)
-        user_count = len(set(m.user_id for m in messages))
-        avg_length = sum(len(m.text or '') for m in messages) / message_count if message_count > 0 else 0
+        if not messages:
+            return None
         
-        # Content analysis
+        # Calculate basic stats
+        message_count = len(messages)
+        user_count = len(set(msg.user_id for msg in messages))
+        avg_length = sum(len(msg.text or '') for msg in messages) / message_count if message_count > 0 else 0
+        
+        # Calculate emoji and sticker stats
         emoji_count = 0
         sticker_count = 0
-        emoji_stats = Counter()
-        sticker_stats = Counter()
-        word_stats = Counter()
-        topic_stats = Counter()
+        top_emojis = Counter()
+        top_stickers = Counter()
         
         for msg in messages:
-            # Count emojis
-            emojis = emoji.emoji_list(msg.text or '')
-            emoji_count += len(emojis)
-            for e in emojis:
-                emoji_stats[e['emoji']] += 1
-            
-            # Count stickers
-            if msg.sticker:
-                sticker_count += 1
-                sticker_stats[msg.sticker.file_unique_id] += 1
-            
-            # Count words
             if msg.text:
-                words = re.findall(r'\w+', msg.text.lower())
-                word_stats.update(words)
-            
-            # Count topics
-            if msg.topic:
-                topic_stats[msg.topic] += 1
+                emojis = [c for c in msg.text if emoji.is_emoji(c)]
+                emoji_count += len(emojis)
+                top_emojis.update(emojis)
         
-        # Activity analysis
-        hour_stats = Counter()
-        day_stats = Counter()
-        activity_trend = Counter()
-        
+        # Calculate word stats
+        words = []
         for msg in messages:
-            hour_stats[msg.timestamp.hour] += 1
-            day_stats[msg.timestamp.strftime("%A")] += 1
-            activity_trend[msg.timestamp.date()] += 1
+            if msg.text:
+                words.extend(re.findall(r'\w+', msg.text.lower()))
+        top_words = Counter(words).most_common(10)
+        
+        # Calculate activity stats
+        hours = [msg.timestamp.hour for msg in messages]
+        most_active_hour = max(set(hours), key=hours.count) if hours else None
+        
+        days = [msg.timestamp.strftime('%A') for msg in messages]
+        most_active_day = max(set(days), key=days.count) if days else None
+        
+        # Calculate activity trend
+        activity_trend = []
+        for i in range(7):
+            date = (now - timedelta(days=i)).date()
+            count = sum(1 for msg in messages if msg.timestamp.date() == date)
+            activity_trend.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'count': count
+            })
         
         # Create stats object
         stats = MessageStats(
             chat_id=chat_id,
             period='week',
-            timestamp=now,
             message_count=message_count,
             user_count=user_count,
             avg_length=avg_length,
             emoji_count=emoji_count,
             sticker_count=sticker_count,
-            top_emojis=emoji_stats.most_common(10),
-            top_stickers=sticker_stats.most_common(10),
-            top_words=word_stats.most_common(10),
-            top_topics=topic_stats.most_common(10),
-            most_active_hour=hour_stats.most_common(1)[0][0] if hour_stats else 0,
-            most_active_day=day_stats.most_common(1)[0][0] if day_stats else "Unknown",
-            activity_trend=[{"date": str(date), "count": count} for date, count in activity_trend.items()]
+            top_emojis=dict(top_emojis.most_common(10)),
+            top_stickers=dict(top_stickers.most_common(10)),
+            top_words=dict(top_words),
+            top_topics=[],  # TODO: Implement topic analysis
+            most_active_hour=most_active_hour,
+            most_active_day=most_active_day,
+            activity_trend=activity_trend
         )
         
-        session.add(stats)
+        await session.add(stats)
         await session.commit()
         
         return stats
