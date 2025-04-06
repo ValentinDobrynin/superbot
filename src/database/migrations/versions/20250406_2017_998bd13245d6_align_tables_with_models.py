@@ -49,7 +49,7 @@ def upgrade() -> None:
     op.create_table(
         'message_contexts',
         sa.Column('id', postgresql.UUID(), nullable=False),
-        sa.Column('message_id', sa.Integer(), nullable=True),
+        sa.Column('message_id', postgresql.UUID(), nullable=True),
         sa.Column('thread_id', postgresql.UUID(), nullable=False),
         sa.Column('context_summary', sa.String(), nullable=True),
         sa.Column('importance_score', sa.Float(), nullable=False, server_default='0.0'),
@@ -76,7 +76,7 @@ def upgrade() -> None:
     op.create_table(
         'message_tags',
         sa.Column('id', postgresql.UUID(), nullable=False),
-        sa.Column('message_id', sa.Integer(), nullable=False),
+        sa.Column('message_id', postgresql.UUID(), nullable=False),
         sa.Column('tag_id', postgresql.UUID(), nullable=False),
         sa.Column('is_auto', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('confidence', sa.Float(), nullable=False, server_default='1.0'),
