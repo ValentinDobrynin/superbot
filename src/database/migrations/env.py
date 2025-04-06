@@ -60,17 +60,28 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True
+    )
 
     with context.begin_transaction():
         context.run_migrations()
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
+    # Convert async URL to sync URL and ensure we're using psycopg2
+    sync_url = settings.DATABASE_URL.replace('postgresql+asyncpg://', 'postgresql://')
+    
     connectable = create_engine(
-        settings.DATABASE_URL,
+        sync_url,
         poolclass=pool.NullPool,
-        module=psycopg2
+        module=psycopg2,
+        connect_args={
+            "connect_timeout": 10,
+            "application_name": "alembic_migrations"
+        }
     )
 
     with connectable.connect() as connection:
