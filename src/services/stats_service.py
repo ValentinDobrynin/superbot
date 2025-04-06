@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,7 @@ class StatsService:
 
     async def get_stats(self, chat_id: int, session: AsyncSession) -> Dict:
         """Get statistics for a chat, using cache if available."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         
         # Check cache
         if chat_id in self._cache and now - self._cache_time[chat_id] < self._cache_duration:
@@ -46,7 +46,7 @@ class StatsService:
 
     async def _calculate_stats(self, chat_id: int, session: AsyncSession) -> MessageStats:
         """Calculate statistics for a chat."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         week_ago = now - timedelta(days=7)
         
         # Get messages

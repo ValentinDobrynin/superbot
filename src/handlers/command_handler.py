@@ -23,16 +23,20 @@ logger = logging.getLogger(__name__)
 async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
     """Update chat title in database."""
     try:
-        chat_info = await message.bot.get_chat(chat_id)
-        logger.info(f"Got chat info from Telegram: {chat_info.title}")
-        
-        # Get chat from database
+        # Get chat from database first
         result = await session.execute(
             select(Chat).where(Chat.chat_id == chat_id)
         )
         chat = result.scalar_one_or_none()
         
-        if chat:
+        if not chat:
+            logger.info(f"Chat {chat_id} not found in database, skipping title update")
+            return  # Chat not in database, skip update
+        
+        try:
+            chat_info = await message.bot.get_chat(chat_id)
+            logger.info(f"Got chat info from Telegram: {chat_info.title}")
+            
             if chat.title != chat_info.title:
                 chat.title = chat_info.title
                 chat.updated_at = datetime.now(timezone.utc)
@@ -40,19 +44,17 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
                 logger.info(f"Updated chat title for chat_id: {chat_id}")
             else:
                 logger.info(f"Chat title is already up to date: {chat.title}")
-    except TelegramForbiddenError as e:
-        logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
-        # Remove chat from database if bot was kicked
-        result = await session.execute(
-            select(Chat).where(Chat.chat_id == chat_id)
-        )
-        chat = result.scalar_one_or_none()
-        if chat:
+        except TelegramForbiddenError as e:
+            logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
+            # Remove chat from database if bot was kicked
             await session.delete(chat)
             await session.commit()
             logger.info(f"Removed chat {chat_id} from database as bot was kicked")
+        except Exception as e:
+            logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
+            # Don't remove chat for other errors
     except Exception as e:
-        logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
+        logger.error(f"Error in update_chat_title for chat_id {chat_id}: {str(e)}")
 
 class TestStates(StatesGroup):
     waiting_for_chat = State()
@@ -739,7 +741,7 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     await update_chat_title(callback.message, chat_id, session)
     
     # Get messages based on period type
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     if period_type == "last":
         # Use last summary timestamp if available, otherwise use 24h
         start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
@@ -747,14 +749,13 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         start_time = now - timedelta(days=1)
     elif period_type == "custom":
         # Store chat_id in state for custom hours input
-        await state.set_state(TestStates.waiting_for_hours)
-        await state.update_data(chat_id=chat_id)
         await callback.message.edit_text(
-            "Enter number of hours for summary:",
+            "Enter number of hours to summarize:",
             reply_markup=None
         )
         return
     
+    # Get messages for the period
     messages = await session.execute(
         select(Message)
         .where(Message.chat_id == chat_id)
@@ -764,7 +765,10 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     messages = messages.scalars().all()
     
     if not messages:
-        await callback.answer("No messages found for selected period", show_alert=True)
+        await callback.message.edit_text(
+            f"No messages found in {chat.title} for the selected period.",
+            reply_markup=None
+        )
         return
     
     # Generate summary
@@ -775,7 +779,10 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     chat.last_summary_timestamp = now
     await session.commit()
     
-    await callback.message.answer(f"📊 Summary for {chat.title}:\n\n{summary}")
+    await callback.message.edit_text(
+        summary,
+        parse_mode=None
+    )
 
 @router.message(TestStates.waiting_for_hours)
 async def process_custom_hours(message: Message, state: FSMContext, session: AsyncSession):

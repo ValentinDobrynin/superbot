@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Enum, select, func, Table, BigInteger, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import enum
 from uuid import uuid4
 
@@ -169,7 +169,7 @@ class MessageStats(Base):
     id = Column(Integer, primary_key=True)
     chat_id = Column(Integer, ForeignKey("chats.id"))
     period = Column(String)  # 'hour', 'day', 'week', 'month'
-    timestamp = Column(DateTime, default=datetime.now)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Basic stats
     message_count = Column(Integer, default=0)
