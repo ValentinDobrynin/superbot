@@ -3,6 +3,7 @@ from aiogram.types import Message, ChatMemberUpdated
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import logging
+import random
 
 from ..config import settings
 from ..database.models import Chat, ChatType
@@ -122,10 +123,67 @@ async def handle_message(message: Message, session: AsyncSession):
 
 async def process_message_for_learning(message: Message, chat: Chat, session: AsyncSession):
     """Process message for learning and context without generating response."""
-    # TODO: Implement message processing for learning
-    pass
+    # Save message to database
+    db_message = Message(
+        message_id=message.message_id,
+        chat_id=chat.id,
+        user_id=message.from_user.id,
+        text=message.text,
+        timestamp=message.date,
+        was_responded=False
+    )
+    session.add(db_message)
+    await session.commit()
+    
+    # Process message for context
+    from ..services.context_service import ContextService
+    context_service = ContextService(session)
+    await context_service.get_or_create_thread(chat.id)
 
 async def process_message_and_respond(message: Message, chat: Chat, session: AsyncSession):
     """Process message and generate response."""
-    # TODO: Implement message processing and response generation
-    pass 
+    # Save message to database
+    db_message = Message(
+        message_id=message.message_id,
+        chat_id=chat.id,
+        user_id=message.from_user.id,
+        text=message.text,
+        timestamp=message.date,
+        was_responded=False
+    )
+    session.add(db_message)
+    await session.commit()
+    
+    # Process message for context
+    from ..services.context_service import ContextService
+    context_service = ContextService(session)
+    thread = await context_service.get_or_create_thread(chat.id)
+    
+    # Generate response based on chat settings
+    if chat.smart_mode:
+        # Use smart mode for response generation
+        from ..services.openai_service import OpenAIService
+        openai_service = OpenAIService()
+        
+        # Check if message is important enough to respond
+        importance = await openai_service.analyze_message_importance(message.text)
+        if importance < chat.importance_threshold:
+            return
+            
+        # Generate response
+        response = await openai_service.generate_response(message.text, thread.topic)
+        if response:
+            await message.answer(response)
+            db_message.was_responded = True
+            await session.commit()
+    else:
+        # Use simple mode with probability
+        if random.random() < chat.response_probability:
+            # Generate simple response
+            from ..services.openai_service import OpenAIService
+            openai_service = OpenAIService()
+            response = await openai_service.generate_response(message.text, thread.topic)
+            if response:
+                await message.answer(response)
+                db_message.was_responded = True
+                await session.commit() 

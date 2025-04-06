@@ -4,7 +4,7 @@ from ..database.models import ChatType
 import random
 import asyncio
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY,
@@ -189,4 +189,49 @@ Message to analyze: {message}"""
         
         Create a comprehensive style guide that captures all these aspects."""
         
-        return await OpenAIService.chat_completion(prompt, temperature=0.7) 
+        return await OpenAIService.chat_completion(prompt, temperature=0.7)
+
+    @staticmethod
+    async def analyze_topics(messages: List[str]) -> List[Dict[str, int]]:
+        """Analyze topics in messages and return list of topics with their counts."""
+        # Combine messages into a single text
+        text = "\n".join(messages)
+        
+        prompt = f"""Analyze the following conversation and identify the main topics being discussed.
+        Return a JSON array of objects, where each object has:
+        - "topic": A short topic name (1-3 words)
+        - "count": Number of messages related to this topic
+        
+        Rules:
+        1. Topics should be specific but not too narrow
+        2. Each message can belong to multiple topics
+        3. Return only the top 10 most frequent topics
+        4. Topics should be in English
+        5. Count should be an integer
+        
+        Example response:
+        [
+            {{"topic": "Work Projects", "count": 45}},
+            {{"topic": "Technical Issues", "count": 32}},
+            {{"topic": "Team Meetings", "count": 28}}
+        ]
+        
+        Conversation:
+        {text}"""
+        
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a topic analyzer. Return only a JSON array of topics and their counts."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500
+        )
+        
+        try:
+            import json
+            topics = json.loads(response.choices[0].message.content.strip())
+            return topics
+        except (json.JSONDecodeError, ValueError):
+            return [] 

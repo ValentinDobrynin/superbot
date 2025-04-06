@@ -97,7 +97,12 @@ class Message(Base):
     chat = relationship("Chat", back_populates="messages")
     thread = relationship("MessageThread", back_populates="messages")
     tags = relationship("MessageTag", back_populates="message")
-    context = relationship("MessageContext", back_populates="message", uselist=False)
+    context = relationship(
+        "MessageContext",
+        back_populates="message",
+        uselist=False,
+        primaryjoin="Message.id==MessageContext.message_id"
+    )
     
     @property
     def tag_names(self) -> list[str]:
@@ -118,6 +123,7 @@ class MessageContext(Base):
     __tablename__ = "message_contexts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
     thread_id = Column(UUID(as_uuid=True), ForeignKey("message_threads.id"))
     context_summary = Column(String)
     importance_score = Column(Float, default=0.0)
@@ -126,6 +132,7 @@ class MessageContext(Base):
     
     # Relationships
     thread = relationship("MessageThread", back_populates="context_entries")
+    message = relationship("Message", back_populates="context")
 
 class Tag(Base):
     """Represents a tag that can be applied to messages."""

@@ -7,6 +7,7 @@ import re
 import emoji
 from collections import Counter
 import asyncio
+from ..services.openai_service import OpenAIService
 
 class StatsService:
     def __init__(self):
@@ -102,6 +103,10 @@ class StatsService:
                 'count': count
             })
         
+        # Analyze topics
+        message_texts = [msg.text for msg in messages if msg.text]
+        top_topics = await OpenAIService.analyze_topics(message_texts)
+        
         # Create stats object
         stats = MessageStats(
             chat_id=chat_id,
@@ -114,7 +119,7 @@ class StatsService:
             top_emojis=dict(top_emojis.most_common(10)),
             top_stickers=dict(top_stickers.most_common(10)),
             top_words=dict(top_words),
-            top_topics=[],  # TODO: Implement topic analysis
+            top_topics=top_topics,
             most_active_hour=most_active_hour,
             most_active_day=most_active_day,
             activity_trend=activity_trend
