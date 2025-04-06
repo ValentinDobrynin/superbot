@@ -17,7 +17,15 @@ class Settings(BaseSettings):
     MAX_CONTEXT_MESSAGES: int = 5
     
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    
+    def get_async_database_url(self) -> str:
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if not url.startswith("postgresql+asyncpg://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
     
     # Chat types
     CHAT_TYPES: List[str] = ["work", "friendly", "mixed"]
