@@ -25,7 +25,7 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
     try:
         # Get chat from database first
         result = await session.execute(
-            select(Chat).where(Chat.name == message.chat.title)
+            select(Chat).where(Chat.id == chat_id)
         )
         chat = result.scalar_one_or_none()
         
