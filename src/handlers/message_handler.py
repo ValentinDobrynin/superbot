@@ -122,7 +122,8 @@ async def process_message_for_learning(message: Message, chat: Chat, session: As
         user_id=message.from_user.id,
         text=message.text,
         created_at=message.date,
-        was_responded=False
+        was_responded=False,
+        updated_at=message.date
     )
     session.add(db_message)
     await session.commit()
@@ -141,7 +142,8 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
         user_id=message.from_user.id,
         text=message.text,
         created_at=message.date,
-        was_responded=False
+        was_responded=False,
+        updated_at=message.date
     )
     session.add(db_message)
     await session.commit()
