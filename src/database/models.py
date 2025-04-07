@@ -27,16 +27,16 @@ class Chat(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    messages = relationship("Message", back_populates="chat")
+    messages = relationship("DBMessage", back_populates="chat")
     threads = relationship("MessageThread", back_populates="chat")
     
     async def adjust_importance_threshold(self, session) -> None:
         """Adjust importance threshold based on response statistics."""
         # Get messages from last 24 hours
         yesterday = datetime.utcnow() - timedelta(days=1)
-        stats_query = select(Message).where(
-            Message.chat_id == self.id,
-            Message.created_at >= yesterday
+        stats_query = select(DBMessage).where(
+            DBMessage.chat_id == self.id,
+            DBMessage.created_at >= yesterday
         )
         result = await session.execute(stats_query)
         messages = result.scalars().all()
@@ -73,7 +73,7 @@ class MessageThread(Base):
     
     # Relationships
     chat = relationship("Chat", back_populates="threads")
-    messages = relationship("Message", back_populates="thread")
+    messages = relationship("DBMessage", back_populates="thread")
     context_entries = relationship("MessageContext", back_populates="thread")
     related_threads = relationship(
         "MessageThread",
@@ -83,7 +83,7 @@ class MessageThread(Base):
         backref="related_to"
     )
 
-class Message(Base):
+class DBMessage(Base):
     """Message from a chat."""
     __tablename__ = "messages"
     
@@ -104,7 +104,7 @@ class Message(Base):
         "MessageContext",
         back_populates="message",
         uselist=False,
-        primaryjoin="Message.id==MessageContext.message_id"
+        primaryjoin="DBMessage.id==MessageContext.message_id"
     )
     
     @property
@@ -135,7 +135,7 @@ class MessageContext(Base):
     
     # Relationships
     thread = relationship("MessageThread", back_populates="context_entries")
-    message = relationship("Message", back_populates="context")
+    message = relationship("DBMessage", back_populates="context")
 
 class Tag(Base):
     """Represents a tag that can be applied to messages."""
@@ -162,7 +162,7 @@ class MessageTag(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    message = relationship("Message", back_populates="tags")
+    message = relationship("DBMessage", back_populates="tags")
     tag = relationship("Tag", back_populates="message_tags")
 
 # Association table for related threads

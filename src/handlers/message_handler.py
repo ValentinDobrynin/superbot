@@ -6,7 +6,7 @@ import logging
 import random
 
 from ..config import settings
-from ..database.models import Chat, ChatType
+from ..database.models import Chat, ChatType, DBMessage
 from .command_handler import update_chat_title
 
 router = Router()
@@ -116,7 +116,7 @@ async def handle_message(message: Message, session: AsyncSession):
 async def process_message_for_learning(message: Message, chat: Chat, session: AsyncSession):
     """Process message for learning and context without generating response."""
     # Save message to database
-    db_message = Message(
+    db_message = DBMessage(
         message_id=message.message_id,
         chat_id=chat.id,
         user_id=message.from_user.id,
@@ -136,7 +136,7 @@ async def process_message_for_learning(message: Message, chat: Chat, session: As
 async def process_message_and_respond(message: Message, chat: Chat, session: AsyncSession):
     """Process message and generate response."""
     # Save message to database
-    db_message = Message(
+    db_message = DBMessage(
         message_id=message.message_id,
         chat_id=chat.id,
         user_id=message.from_user.id,
