@@ -124,8 +124,8 @@ async def status_command(message: Message, session: AsyncSession):
     
     # Update chat titles
     for chat in chats:
-        logger.info(f"Updating title for chat {chat.chat_id} (current title: {chat.name})")
-        await update_chat_title(message, chat.chat_id, session)
+        logger.info(f"Updating title for chat {chat.id} (current title: {chat.name})")
+        await update_chat_title(message, chat.id, session)
     
     # Create keyboard with chat buttons
     keyboard = []
