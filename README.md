@@ -186,6 +186,14 @@ python src/main.py
 - Обновляет стиль для каждого типа чата
 - Показывает обновленный стиль
 
+## Database Checks
+
+### Check Messages Table Structure
+```bash
+psql "postgresql://superbot_user:fGKUr4bbKVXRYusJMepx5GH7WrF5f706@dpg-cvm4r2je5dus73afbbo0-a.oregon-postgres.render.com/superbot" -c "\d messages"
+```
+This command displays the structure of the messages table, including column names, data types, and constraints.
+
 ## Основные промпты
 
 ### Генерация ответа
