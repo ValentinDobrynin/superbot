@@ -36,7 +36,7 @@ class ContextService:
             topic=topic or "General Discussion",
             is_active=True
         )
-        await self.session.add(new_thread)
+        self.session.add(new_thread)
         await self.session.commit()
 
         if thread:
