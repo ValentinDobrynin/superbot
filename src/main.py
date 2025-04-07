@@ -60,9 +60,9 @@ async def main():
     await notification_service.notify_startup()
     
     # Start periodic stats update
-    async with get_session() as session:
-        stats_service = StatsService()
-        asyncio.create_task(stats_service.start_periodic_update(session))
+    session = await anext(get_session())
+    stats_service = StatsService()
+    asyncio.create_task(stats_service.start_periodic_update(session))
     
     # Start polling
     logger.info("Starting bot...")
