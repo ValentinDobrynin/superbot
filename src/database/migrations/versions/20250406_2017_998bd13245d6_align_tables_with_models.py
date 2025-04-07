@@ -114,6 +114,7 @@ def upgrade() -> None:
         sa.Column('top_topics', postgresql.JSON(), nullable=True),
         sa.Column('most_active_hour', sa.Integer(), nullable=True),
         sa.Column('most_active_day', sa.String(), nullable=True),
+        sa.Column('activity_trend', postgresql.JSON(), nullable=True),
         sa.ForeignKeyConstraint(['chat_id'], ['chats.id'], ),
         sa.PrimaryKeyConstraint('id')
     )
