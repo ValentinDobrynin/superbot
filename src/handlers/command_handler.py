@@ -34,7 +34,9 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             return  # Chat not in database, skip update
         
         try:
-            chat_info = await message.bot.get_chat(chat_id)
+            # Convert UUID to string for Telegram API
+            chat_id_str = str(chat_id)
+            chat_info = await message.bot.get_chat(chat_id_str)
             logger.info(f"Got chat info from Telegram: {chat_info.title}")
             
             if chat.name != chat_info.title:
@@ -160,7 +162,7 @@ async def process_stats_selection(callback: CallbackQuery, session: AsyncSession
         await callback.answer("Only the owner can view statistics", show_alert=True)
         return
     
-    chat_id = int(callback.data.split("_")[1])
+    chat_id = callback.data.split("_")[1]  # Keep as string since it's a UUID
     chat = await session.get(Chat, chat_id)
     
     if not chat:

@@ -15,7 +15,7 @@ class StatsService:
         self._cache_time = {}
         self._cache_duration = timedelta(minutes=5)
 
-    async def get_stats(self, chat_id: int, session: AsyncSession) -> Dict:
+    async def get_stats(self, chat_id: str, session: AsyncSession) -> Dict:
         """Get statistics for a chat, using cache if available."""
         now = datetime.now(timezone.utc)
         
@@ -45,7 +45,7 @@ class StatsService:
         
         return stats
 
-    async def _calculate_stats(self, chat_id: int, session: AsyncSession) -> MessageStats:
+    async def _calculate_stats(self, chat_id: str, session: AsyncSession) -> MessageStats:
         """Calculate statistics for a chat."""
         now = datetime.now(timezone.utc)
         week_ago = now - timedelta(days=7)
