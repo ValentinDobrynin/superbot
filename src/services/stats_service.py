@@ -60,7 +60,23 @@ class StatsService:
         messages = messages.scalars().all()
         
         if not messages:
-            return None
+            # Return empty stats instead of None
+            return MessageStats(
+                chat_id=chat_id,
+                period='week',
+                message_count=0,
+                user_count=0,
+                avg_length=0.0,
+                emoji_count=0,
+                sticker_count=0,
+                top_emojis={},
+                top_stickers={},
+                top_words={},
+                top_topics={},
+                most_active_hour=None,
+                most_active_day=None,
+                activity_trend=[]
+            )
         
         # Calculate basic stats
         message_count = len(messages)
