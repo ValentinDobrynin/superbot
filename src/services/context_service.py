@@ -25,7 +25,7 @@ class ContextService:
             MessageThread.is_active == True
         )
         result = await self.session.execute(query)
-        thread = await result.scalar_one_or_none()
+        thread = result.scalar_one_or_none()
 
         if thread and not topic:
             return thread
