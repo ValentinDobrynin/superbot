@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import re
 
-from ..database.models import Chat, Style, ChatType, Message, MessageTag, Tag, MessageThread, MessageContext
+from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext
 from ..config import settings
 from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
@@ -786,10 +786,10 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     
     # Get messages for the period
     messages = await session.execute(
-        select(Message)
-        .where(Message.chat_id == chat_id)
-        .where(Message.timestamp >= start_time)
-        .order_by(Message.timestamp)
+        select(DBMessage)
+        .where(DBMessage.chat_id == chat_id)
+        .where(DBMessage.timestamp >= start_time)
+        .order_by(DBMessage.timestamp)
     )
     messages = messages.scalars().all()
     
@@ -841,10 +841,10 @@ async def process_custom_hours(message: Message, state: FSMContext, session: Asy
         # Get messages for specified hours
         start_time = datetime.now() - timedelta(hours=hours)
         messages = await session.execute(
-            select(Message)
-            .where(Message.chat_id == chat_id)
-            .where(Message.timestamp >= start_time)
-            .order_by(Message.timestamp)
+            select(DBMessage)
+            .where(DBMessage.chat_id == chat_id)
+            .where(DBMessage.timestamp >= start_time)
+            .order_by(DBMessage.timestamp)
         )
         messages = messages.scalars().all()
         
@@ -861,7 +861,7 @@ async def process_custom_hours(message: Message, state: FSMContext, session: Asy
         chat.last_summary_timestamp = datetime.now()
         await session.commit()
         
-        await message.answer(f"�� Summary for {chat.name} (last {hours:.1f} hours):\n\n{summary}")
+        await message.answer(f"Summary for {chat.name} (last {hours:.1f} hours):\n\n{summary}")
     except ValueError:
         await message.answer("❌ Please enter a valid number")
     
@@ -1013,7 +1013,7 @@ async def refresh_command(message: Message, session: AsyncSession):
         return
     
     # Get all messages
-    messages = await session.execute(select(Message).order_by(Message.timestamp))
+    messages = await session.execute(select(DBMessage).order_by(DBMessage.timestamp))
     messages = messages.scalars().all()
     
     if not messages:
@@ -1150,9 +1150,9 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
         return
 
     # Get target message
-    query = select(Message).where(
-        Message.chat_id == message.chat.id,
-        Message.message_id == target_msg_id
+    query = select(DBMessage).where(
+        DBMessage.chat_id == message.chat.id,
+        DBMessage.message_id == target_msg_id
     )
     result = await session.execute(query)
     target_msg = result.scalar_one_or_none()
@@ -1394,10 +1394,10 @@ async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
     # Get messages from the last week
     week_ago = datetime.now() - timedelta(days=7)
     messages = await session.execute(
-        select(Message)
-        .where(Message.chat_id == chat_id)
-        .where(Message.timestamp >= week_ago)
-        .order_by(Message.timestamp)
+        select(DBMessage)
+        .where(DBMessage.chat_id == chat_id)
+        .where(DBMessage.timestamp >= week_ago)
+        .order_by(DBMessage.timestamp)
     )
     messages = messages.scalars().all()
     
@@ -1409,7 +1409,7 @@ async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
     context_service = ContextService(session)
     summary = await context_service.generate_chat_summary(messages)
     
-    await callback.message.answer(f"�� Summary for {chat.name}:\n\n{summary}")
+    await callback.message.answer(f"Summary for {chat.name}:\n\n{summary}")
 
 async def process_list_chats(message: Message, session: AsyncSession) -> None:
     """Process listing of all chats."""

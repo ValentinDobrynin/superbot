@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..database.models import Chat, Message, MessageStats
+from ..database.models import Chat, DBMessage, MessageStats
 import re
 import emoji
 from collections import Counter
@@ -52,10 +52,10 @@ class StatsService:
         
         # Get messages for the period
         messages = await session.execute(
-            select(Message)
-            .where(Message.chat_id == chat_id)
-            .where(Message.timestamp >= week_ago)
-            .order_by(Message.timestamp)
+            select(DBMessage)
+            .where(DBMessage.chat_id == chat_id)
+            .where(DBMessage.created_at >= week_ago)
+            .order_by(DBMessage.created_at)
         )
         messages = messages.scalars().all()
         
@@ -87,17 +87,17 @@ class StatsService:
         top_words = Counter(words).most_common(10)
         
         # Calculate activity stats
-        hours = [msg.timestamp.hour for msg in messages]
+        hours = [msg.created_at.hour for msg in messages]
         most_active_hour = max(set(hours), key=hours.count) if hours else None
         
-        days = [msg.timestamp.strftime('%A') for msg in messages]
+        days = [msg.created_at.strftime('%A') for msg in messages]
         most_active_day = max(set(days), key=days.count) if days else None
         
         # Calculate activity trend
         activity_trend = []
         for i in range(7):
             date = (now - timedelta(days=i)).date()
-            count = sum(1 for msg in messages if msg.timestamp.date() == date)
+            count = sum(1 for msg in messages if msg.created_at.date() == date)
             activity_trend.append({
                 'date': date.strftime('%Y-%m-%d'),
                 'count': count

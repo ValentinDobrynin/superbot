@@ -4,7 +4,7 @@ from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from sqlalchemy import select
 from src.services.context_service import ContextService
-from src.database.models import MessageThread, Message, Tag, MessageTag, MessageContext
+from src.database.models import MessageThread, DBMessage, Tag, MessageTag, MessageContext
 
 @pytest.fixture
 def context_service():
@@ -59,7 +59,7 @@ async def test_get_or_create_thread_new(context_service):
 @pytest.mark.asyncio
 async def test_analyze_message(context_service):
     """Test message analysis."""
-    message = Message(text="Test message about technology")
+    message = DBMessage(text="Test message about technology")
     result = await context_service.analyze_message(message)
     tags = result[0]  # First element is tags list
     assert isinstance(tags, list)
@@ -108,8 +108,8 @@ async def test_update_thread_context(context_service):
     # Setup mock thread and messages
     thread = MessageThread(id=uuid4(), chat_id=123)
     messages = [
-        Message(id=1, text="First message", timestamp=datetime.utcnow()),
-        Message(id=2, text="Second message", timestamp=datetime.utcnow())
+        DBMessage(id=1, text="First message", created_at=datetime.utcnow()),
+        DBMessage(id=2, text="Second message", created_at=datetime.utcnow())
     ]
     
     # Setup mock execute results
@@ -176,20 +176,20 @@ async def test_get_thread_stats(context_service):
     # Setup mock thread and messages
     thread = MessageThread(id=uuid4(), chat_id=123)
     messages = [
-        Message(
+        DBMessage(
             id=1,
             text="First message",
-            timestamp=datetime.utcnow() - timedelta(hours=1),
+            created_at=datetime.utcnow() - timedelta(hours=1),
             user_id=1,
             tags=[
                 MessageTag(tag=Tag(name="tech")),
                 MessageTag(tag=Tag(name="question"))
             ]
         ),
-        Message(
+        DBMessage(
             id=2,
             text="Second message",
-            timestamp=datetime.utcnow(),
+            created_at=datetime.utcnow(),
             user_id=2,
             tags=[
                 MessageTag(tag=Tag(name="tech"))

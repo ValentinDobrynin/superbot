@@ -7,7 +7,7 @@ from collections import Counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database.models import Message, MessageThread, MessageContext, Tag, MessageTag
+from ..database.models import DBMessage, MessageThread, MessageContext, Tag, MessageTag
 from .openai_service import OpenAIService
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class ContextService:
 
         return new_thread
 
-    async def analyze_message(self, message: Message) -> Tuple[List[str], float]:
+    async def analyze_message(self, message: DBMessage) -> Tuple[List[str], float]:
         """Analyze message content for tags and importance."""
         prompt = f"""
         Analyze the following message and suggest tags and importance (0-1):
@@ -78,7 +78,7 @@ class ContextService:
             tags.append(tag)
         return tags
 
-    async def add_tags_to_message(self, message: Message, tags: List[Tag], is_auto: bool = True) -> None:
+    async def add_tags_to_message(self, message: DBMessage, tags: List[Tag], is_auto: bool = True) -> None:
         """Add tags to a message."""
         for tag in tags:
             message_tag = MessageTag(
@@ -92,9 +92,9 @@ class ContextService:
     async def update_thread_context(self, thread: MessageThread) -> None:
         """Update thread context based on recent messages."""
         # Get recent messages from thread
-        query = select(Message).where(
-            Message.thread_id == thread.id
-        ).order_by(Message.timestamp.desc()).limit(10)
+        query = select(DBMessage).where(
+            DBMessage.thread_id == thread.id
+        ).order_by(DBMessage.created_at.desc()).limit(10)
         result = await self.session.execute(query)
         result_scalars = await result.scalars()
         messages = await result_scalars.all()
@@ -169,7 +169,7 @@ class ContextService:
     async def get_thread_stats(self, thread: MessageThread) -> Dict[str, Any]:
         """Get statistics for a message thread."""
         # Get all messages in the thread
-        query = select(Message).where(Message.thread_id == thread.id)
+        query = select(DBMessage).where(DBMessage.thread_id == thread.id)
         result = await self.session.execute(query)
         messages = result.scalars().all()
         
@@ -181,9 +181,9 @@ class ContextService:
         unique_users = len(set(msg.user_id for msg in messages))
         
         # Calculate duration
-        first_message = min(messages, key=lambda m: m.timestamp)
-        last_message = max(messages, key=lambda m: m.timestamp)
-        duration = (last_message.timestamp - first_message.timestamp).total_seconds() / 3600
+        first_message = min(messages, key=lambda m: m.created_at)
+        last_message = max(messages, key=lambda m: m.created_at)
+        duration = (last_message.created_at - first_message.created_at).total_seconds() / 3600
         
         # Get top tags
         tag_query = select(MessageTag).join(Tag).where(MessageTag.message_id.in_([m.id for m in messages]))
@@ -200,14 +200,14 @@ class ContextService:
             "top_tags": top_tags
         }
 
-    async def generate_chat_summary(self, messages: List[Message]) -> str:
+    async def generate_chat_summary(self, messages: List[DBMessage]) -> str:
         """Generate a summary of chat messages using OpenAI."""
         if not messages:
             return "No messages to summarize."
         
         # Prepare messages for summarization
         messages_text = "\n".join([
-            f"{msg.timestamp.strftime('%Y-%m-%d %H:%M')} - User {msg.user_id}: {msg.text}"
+            f"{msg.created_at.strftime('%Y-%m-%d %H:%M')} - User {msg.user_id}: {msg.text}"
             for msg in messages
         ])
         
