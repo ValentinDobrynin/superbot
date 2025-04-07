@@ -189,22 +189,22 @@ async def process_stats_selection(callback: CallbackQuery, session: AsyncSession
     
     if stats.top_emojis:
         status_text += "\n😊 Top Emojis:\n"
-        for emoji, count in stats.top_emojis[:5]:
+        for emoji, count in list(stats.top_emojis.items())[:5]:
             status_text += f"• {emoji}: {count}\n"
     
     if stats.top_stickers:
         status_text += "\n🎯 Top Stickers:\n"
-        for sticker_id, count in stats.top_stickers[:5]:
+        for sticker_id, count in list(stats.top_stickers.items())[:5]:
             status_text += f"• {sticker_id}: {count}\n"
     
     if stats.top_words:
         status_text += "\n📝 Top Words:\n"
-        for word, count in stats.top_words[:5]:
+        for word, count in list(stats.top_words.items())[:5]:
             status_text += f"• {word}: {count}\n"
     
     if stats.top_topics:
         status_text += "\n💬 Top Topics:\n"
-        for topic, count in stats.top_topics[:5]:
+        for topic, count in list(stats.top_topics.items())[:5]:
             status_text += f"• {topic}: {count}\n"
     
     # Activity stats
@@ -719,7 +719,7 @@ async def select_summary_period(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Only the owner can generate summaries", show_alert=True)
         return
     
-    chat_id = int(callback.data.split("_")[2])
+    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
     chat = await session.get(Chat, chat_id)
     
     if not chat:
@@ -761,7 +761,6 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         return
     
     _, _, chat_id, period_type = callback.data.split("_")
-    chat_id = int(chat_id)
     chat = await session.get(Chat, chat_id)
     
     if not chat:
@@ -1069,7 +1068,7 @@ async def process_test_chat(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Only the owner can test bot functionality", show_alert=True)
         return
     
-    chat_id = int(callback.data.split("_")[2])
+    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
     chat = await session.get(Chat, chat_id)
     
     if chat:
@@ -1331,7 +1330,7 @@ async def select_chat_for_style(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != settings.OWNER_ID:
         return
     
-    chat_id = int(callback.data.split("_")[2])
+    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
     
     # Create style selection keyboard
     keyboard = [
@@ -1365,7 +1364,7 @@ async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
         return
     
     _, _, chat_id, style = callback.data.split("_")
-    chat_id = int(chat_id)
+    chat_id = chat_id  # Keep as string since it's a UUID
     
     # Update chat style
     chat = await session.get(Chat, chat_id)
@@ -1384,7 +1383,7 @@ async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != settings.OWNER_ID:
         return
     
-    chat_id = int(callback.data.split("_")[2])
+    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
     chat = await session.get(Chat, chat_id)
     if not chat:
         await callback.answer("❌ Chat not found")
