@@ -17,6 +17,7 @@ from .handlers import command_handler, message_handler, callback_handler
 from .database.database import init_db, get_session
 from .middleware import DatabaseMiddleware
 from .services.notification_service import NotificationService
+from .services.stats_service import StatsService
 
 # Configure logging
 logging.basicConfig(
@@ -57,6 +58,11 @@ async def main():
     # Send startup notification
     notification_service = NotificationService(bot, settings.OWNER_ID)
     await notification_service.notify_startup()
+    
+    # Start periodic stats update
+    async with get_session() as session:
+        stats_service = StatsService()
+        asyncio.create_task(stats_service.start_periodic_update(session))
     
     # Start polling
     logger.info("Starting bot...")
