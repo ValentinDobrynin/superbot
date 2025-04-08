@@ -141,7 +141,7 @@ class StatsService:
             activity_trend=activity_trend
         )
         
-        await session.add(stats)
+        session.add(stats)
         await session.commit()
         
         return stats
