@@ -1,20 +1,21 @@
 services:
-  - type: background
+  - type: web
     name: superbot
     env: python
-    region: frankfurt  # или другой регион по вашему выбору
-    plan: free
-    branch: main
-    buildCommand: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: python src/main.py
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      alembic upgrade head
+      python -m src.main
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: superbot_db
+          property: connectionString
       - key: BOT_TOKEN
         sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: OWNER_ID
-        sync: false
-      - key: DATABASE_URL
         sync: false 
