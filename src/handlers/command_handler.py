@@ -9,6 +9,7 @@ from sqlalchemy.sql import func
 from datetime import datetime, timedelta, timezone
 import logging
 import re
+from typing import List
 
 from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext, MessageStats
 from ..config import settings
@@ -359,7 +360,7 @@ async def set_probability_command(message: Message, session: AsyncSession):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await message.answer("Select a chat to set response probability:", reply_markup=markup)
 
-@router.callback_query(F.data.startswith("select_chat_prob_"))
+@router.callback_query(lambda c: c.data.startswith("select_chat_prob_"))
 async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSession):
     """Process chat selection for probability setting."""
     if callback.from_user.id != settings.OWNER_ID:
@@ -1437,4 +1438,66 @@ async def process_list_chats(message: Message, session: AsyncSession) -> None:
         text += f"Created: {chat.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
         text += f"Updated: {chat.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     
-    await message.answer(text) 
+    await message.answer(text)
+
+def create_chat_selection_keyboard(chats: List[Chat]) -> InlineKeyboardMarkup:
+    """Create keyboard for chat selection."""
+    keyboard = []
+    for chat in chats:
+        # Используем | вместо _ как разделитель
+        callback_data = f"select_chat|{chat.id}|{chat.name}"
+        keyboard.append([InlineKeyboardButton(
+            text=chat.name,
+            callback_data=callback_data
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def create_probability_keyboard(chat_id: str) -> InlineKeyboardMarkup:
+    """Create keyboard for probability selection."""
+    keyboard = []
+    probabilities = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    for prob in probabilities:
+        # Используем | вместо _ как разделитель
+        callback_data = f"set_probability|{chat_id}|{prob}"
+        keyboard.append([InlineKeyboardButton(
+            text=f"{prob:.1f}",
+            callback_data=callback_data
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@router.callback_query(lambda c: c.data.startswith("select_chat"))
+async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext):
+    """Handle chat selection for probability setting."""
+    try:
+        # Разделяем по | вместо _
+        _, chat_id, chat_name = callback.data.split("|")
+        await state.update_data(selected_chat_id=chat_id)
+        await callback.message.edit_text(
+            f"Выбран чат: {chat_name}\nВыберите вероятность ответа:",
+            reply_markup=create_probability_keyboard(chat_id)
+        )
+    except Exception as e:
+        logger.error(f"Error in select_chat_for_probability: {e}")
+        await callback.message.edit_text("Произошла ошибка при выборе чата.")
+
+@router.callback_query(lambda c: c.data.startswith("set_probability"))
+async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
+    """Handle probability setting for selected chat."""
+    try:
+        # Разделяем по | вместо _
+        _, chat_id, prob = callback.data.split("|")
+        prob = float(prob)
+        
+        async for session in get_session():
+            chat = await session.get(Chat, chat_id)
+            if chat:
+                chat.response_probability = prob
+                await session.commit()
+                await callback.message.edit_text(
+                    f"✅ Вероятность ответа для чата {chat.name} установлена на {prob:.1f}"
+                )
+            else:
+                await callback.message.edit_text("❌ Чат не найден")
+    except Exception as e:
+        logger.error(f"Error in set_chat_probability: {e}")
+        await callback.message.edit_text("Произошла ошибка при установке вероятности.") 
