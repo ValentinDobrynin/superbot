@@ -367,62 +367,26 @@ async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSes
         await callback.answer("You are not authorized to use this command.")
         return
         
-    chat_id = callback.data.split("_")[3]
+    # Get all chats
+    result = await session.execute(select(Chat))
+    chats = result.scalars().all()
     
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback.answer("Chat not found in database.")
+    if not chats:
+        await callback.message.edit_text("No chats found in database.")
         return
         
-    # Create keyboard with probability options
-    keyboard = [
-        [
-            InlineKeyboardButton(text="0.1", callback_data=f"set_prob_{chat_id}_0.1"),
-            InlineKeyboardButton(text="0.3", callback_data=f"set_prob_{chat_id}_0.3"),
-            InlineKeyboardButton(text="0.5", callback_data=f"set_prob_{chat_id}_0.5")
-        ],
-        [
-            InlineKeyboardButton(text="0.7", callback_data=f"set_prob_{chat_id}_0.7"),
-            InlineKeyboardButton(text="0.9", callback_data=f"set_prob_{chat_id}_0.9"),
-            InlineKeyboardButton(text="Custom", callback_data=f"custom_prob_{chat_id}")
-        ]
-    ]
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text(
-        f"Select response probability for {chat.name}:",
-        reply_markup=markup
-    )
-
-@router.callback_query(F.data.startswith("set_prob_"))
-async def set_chat_probability(callback: CallbackQuery, session: AsyncSession):
-    """Process probability setting callback."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-        
-    _, chat_id, prob = callback.data.split("_")
-    prob = float(prob)
-    
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback.answer("Chat not found in database.")
-        return
-        
-    # Update probability
-    chat.response_probability = prob
-    await session.commit()
+    # Create keyboard with chat selection
+    keyboard = []
+    for chat in chats:
+        keyboard.append([InlineKeyboardButton(
+            text=chat.name,
+            callback_data=f"select_chat|{chat.id}|{chat.name}"
+        )])
     
     await callback.message.edit_text(
-        f"Response probability set to {prob:.2f} for {chat.name}"
+        "Select a chat to set response probability:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
-    await callback.answer("Probability updated")
 
 @router.callback_query(F.data.startswith("custom_prob_"))
 async def custom_probability(callback: CallbackQuery, state: FSMContext):
