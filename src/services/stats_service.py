@@ -15,34 +15,31 @@ class StatsService:
         self._cache_time = {}
         self._cache_duration = timedelta(minutes=5)
 
-    async def get_stats(self, chat_id: str, session: AsyncSession) -> Dict:
-        """Get statistics for a chat, using cache if available."""
-        now = datetime.now(timezone.utc)
+    async def get_stats(self, chat_id: str, session: AsyncSession) -> MessageStats:
+        """Get message statistics for a chat."""
+        # Check cache first
+        cache_key = f"stats_{chat_id}"
+        if cache_key in self._cache:
+            cached_stats = self._cache[cache_key]
+            if datetime.now(timezone.utc) - cached_stats.timestamp < timedelta(minutes=5):
+                return cached_stats
         
-        # Check cache
-        if chat_id in self._cache and now - self._cache_time[chat_id] < self._cache_duration:
-            return self._cache[chat_id]
-        
-        # Get or create stats
+        # Get from database
         stats = await session.execute(
             select(MessageStats)
             .where(MessageStats.chat_id == chat_id)
-            .where(MessageStats.period == 'week')
+            .where(MessageStats.period == "week")
             .order_by(MessageStats.timestamp.desc())
+            .limit(1)
         )
         stats = stats.scalar_one_or_none()
         
         if not stats:
+            # Calculate new stats if none found
             stats = await self._calculate_stats(chat_id, session)
-        else:
-            # Update if older than 5 minutes
-            if now - stats.timestamp > self._cache_duration:
-                stats = await self._calculate_stats(chat_id, session)
         
-        # Cache the results
-        self._cache[chat_id] = stats
-        self._cache_time[chat_id] = now
-        
+        # Update cache
+        self._cache[cache_key] = stats
         return stats
 
     async def _calculate_stats(self, chat_id: str, session: AsyncSession) -> MessageStats:

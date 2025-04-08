@@ -34,8 +34,8 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             return  # Chat not in database, skip update
         
         try:
-            # Use chat_id directly as it's already in the correct format
-            chat_info = await message.bot.get_chat(chat_id)
+            # Use chat.chat_id which is the numeric Telegram chat ID
+            chat_info = await message.bot.get_chat(chat.chat_id)
             logger.info(f"Got chat info from Telegram: {chat_info.title}")
             
             if chat.name != chat_info.title:
