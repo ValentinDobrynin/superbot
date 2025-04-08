@@ -45,7 +45,8 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
             chat = Chat(
                 name=title,
                 description=f"Telegram chat {event.chat.id}",
-                type="MIXED"  # Default type
+                type="MIXED",  # Default type
+                telegram_id=event.chat.id  # Store Telegram's chat ID
             )
             session.add(chat)
             await session.commit()
@@ -98,7 +99,8 @@ async def handle_message(message: Message, session: AsyncSession):
         chat = Chat(
             name=title,
             description=f"Telegram chat {message.chat.id}",
-            type="MIXED"  # Default type
+            type="MIXED",  # Default type
+            telegram_id=message.chat.id  # Store Telegram's chat ID
         )
         session.add(chat)
         await session.commit()

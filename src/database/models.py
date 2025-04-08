@@ -16,6 +16,7 @@ class Chat(Base):
     __tablename__ = "chats"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    telegram_id = Column(BigInteger, nullable=False, unique=True)  # Telegram's chat ID
     name = Column(String, nullable=True)
     description = Column(String, nullable=True)
     type = Column(String, nullable=False)  # Using string instead of enum
