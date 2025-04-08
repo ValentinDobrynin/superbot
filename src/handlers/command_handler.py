@@ -17,7 +17,7 @@ from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
 from ..services.stats_service import StatsService
 from aiogram.exceptions import TelegramForbiddenError
-from ..database import get_session
+from ..database.database import get_session
 
 router = Router()
 logger = logging.getLogger(__name__)
