@@ -1408,8 +1408,8 @@ def create_chat_selection_keyboard(chats: List[Chat]) -> InlineKeyboardMarkup:
     """Create keyboard for chat selection."""
     keyboard = []
     for chat in chats:
-        # Используем | вместо _ как разделитель
-        callback_data = f"select_chat|{chat.id}|{chat.name}"
+        # Используем более короткий формат callback-данных
+        callback_data = f"sel|{chat.id}"
         keyboard.append([InlineKeyboardButton(
             text=chat.name,
             callback_data=callback_data
@@ -1421,30 +1421,35 @@ def create_probability_keyboard(chat_id: str) -> InlineKeyboardMarkup:
     keyboard = []
     probabilities = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     for prob in probabilities:
-        # Используем | вместо _ как разделитель
-        callback_data = f"set_probability|{chat_id}|{prob}"
+        # Используем более короткий формат callback-данных
+        callback_data = f"prob|{chat_id}|{prob}"
         keyboard.append([InlineKeyboardButton(
             text=f"{prob:.1f}",
             callback_data=callback_data
         )])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-@router.callback_query(lambda c: c.data.startswith("select_chat"))
+@router.callback_query(lambda c: c.data.startswith("sel|"))
 async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext):
     """Handle chat selection for probability setting."""
     try:
         # Разделяем по | вместо _
-        _, chat_id, chat_name = callback.data.split("|")
-        await state.update_data(selected_chat_id=chat_id)
-        await callback.message.edit_text(
-            f"Выбран чат: {chat_name}\nВыберите вероятность ответа:",
-            reply_markup=create_probability_keyboard(chat_id)
-        )
+        _, chat_id = callback.data.split("|")
+        async for session in get_session():
+            chat = await session.get(Chat, chat_id)
+            if chat:
+                await state.update_data(selected_chat_id=chat_id)
+                await callback.message.edit_text(
+                    f"Выбран чат: {chat.name}\nВыберите вероятность ответа:",
+                    reply_markup=create_probability_keyboard(chat_id)
+                )
+            else:
+                await callback.message.edit_text("❌ Чат не найден")
     except Exception as e:
         logger.error(f"Error in select_chat_for_probability: {e}")
         await callback.message.edit_text("Произошла ошибка при выборе чата.")
 
-@router.callback_query(lambda c: c.data.startswith("set_probability"))
+@router.callback_query(lambda c: c.data.startswith("prob|"))
 async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
     """Handle probability setting for selected chat."""
     try:
