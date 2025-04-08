@@ -34,9 +34,8 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             return  # Chat not in database, skip update
         
         try:
-            # Convert UUID to string for Telegram API
-            chat_id_str = str(chat_id)
-            chat_info = await message.bot.get_chat(chat_id_str)
+            # Use chat_id directly as it's already in the correct format
+            chat_info = await message.bot.get_chat(chat_id)
             logger.info(f"Got chat info from Telegram: {chat_info.title}")
             
             if chat.name != chat_info.title:
@@ -53,8 +52,14 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             await session.commit()
             logger.info(f"Removed chat {chat_id} from database as bot was kicked")
         except Exception as e:
-            logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
-            # Don't remove chat for other errors
+            if "chat not found" in str(e).lower():
+                logger.error(f"Chat {chat_id} not found in Telegram, removing from database")
+                await session.delete(chat)
+                await session.commit()
+                logger.info(f"Removed chat {chat_id} from database as it was not found in Telegram")
+            else:
+                logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
+                # Don't remove chat for other errors
     except Exception as e:
         logger.error(f"Error in update_chat_title for chat_id {chat_id}: {str(e)}")
 
