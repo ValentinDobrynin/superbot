@@ -34,8 +34,8 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             return  # Chat not in database, skip update
         
         try:
-            # Use chat.chat_id which is the numeric Telegram chat ID
-            chat_info = await message.bot.get_chat(chat.chat_id)
+            # Use chat.id which is the numeric Telegram chat ID
+            chat_info = await message.bot.get_chat(chat.id)
             logger.info(f"Got chat info from Telegram: {chat_info.title}")
             
             if chat.name != chat_info.title:
@@ -209,8 +209,8 @@ async def process_stats_selection(callback: CallbackQuery, session: AsyncSession
     
     if stats.top_topics:
         status_text += "\n💬 Top Topics:\n"
-        for topic, count in list(stats.top_topics.items())[:5]:
-            status_text += f"• {topic}: {count}\n"
+        for topic in stats.top_topics[:5]:
+            status_text += f"• {topic['topic']}: {topic['count']}\n"
     
     # Activity stats
     status_text += "\n⏰ Activity Analysis:\n"
@@ -701,7 +701,7 @@ async def summarize_chat_command(message: Message, session: AsyncSession):
     
     # Update chat titles
     for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
+        await update_chat_title(message, chat.id, session)
     
     keyboard = []
     for chat in chats:
@@ -1050,7 +1050,7 @@ async def test_command(message: Message, session: AsyncSession):
     
     # Update chat titles
     for chat in chats:
-        await update_chat_title(message, chat.chat_id, session)
+        await update_chat_title(message, chat.id, session)
     
     keyboard = []
     for chat in chats:
