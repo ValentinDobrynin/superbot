@@ -463,7 +463,20 @@ async def set_importance_command(message: Message, session: AsyncSession):
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await message.answer("Select a chat to set importance threshold:", reply_markup=markup)
 
-@router.callback_query(F.data.startswith("select_chat_imp_"))
+def create_importance_keyboard(chat_id: str) -> InlineKeyboardMarkup:
+    """Create keyboard for importance selection."""
+    keyboard = []
+    importance_values = [0.1, 0.3, 0.5, 0.7, 0.9]
+    for imp in importance_values:
+        # Используем более короткий формат callback-данных
+        callback_data = f"imp|{chat_id}|{imp}"
+        keyboard.append([InlineKeyboardButton(
+            text=f"{imp:.1f}",
+            callback_data=callback_data
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@router.callback_query(lambda c: c.data.startswith("select_chat_imp_"))
 async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSession):
     """Process chat selection for importance setting."""
     if callback.from_user.id != settings.OWNER_ID:
@@ -480,34 +493,20 @@ async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSess
         await callback.answer("Chat not found in database.")
         return
         
-    # Create keyboard with importance options
-    keyboard = [
-        [
-            InlineKeyboardButton(text="0.1", callback_data=f"set_imp_{chat_id}_0.1"),
-            InlineKeyboardButton(text="0.3", callback_data=f"set_imp_{chat_id}_0.3"),
-            InlineKeyboardButton(text="0.5", callback_data=f"set_imp_{chat_id}_0.5")
-        ],
-        [
-            InlineKeyboardButton(text="0.7", callback_data=f"set_imp_{chat_id}_0.7"),
-            InlineKeyboardButton(text="0.9", callback_data=f"set_imp_{chat_id}_0.9"),
-            InlineKeyboardButton(text="Custom", callback_data=f"custom_imp_{chat_id}")
-        ]
-    ]
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await callback.message.edit_text(
         f"Select importance threshold for {chat.name}:",
-        reply_markup=markup
+        reply_markup=create_importance_keyboard(chat_id)
     )
 
-@router.callback_query(F.data.startswith("set_imp_"))
+@router.callback_query(lambda c: c.data.startswith("imp|"))
 async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
     """Process importance setting callback."""
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("You are not authorized to use this command.")
         return
         
-    _, chat_id, imp = callback.data.split("_")
+    # Разделяем по | вместо _
+    _, chat_id, imp = callback.data.split("|")
     imp = float(imp)
     
     # Get chat from database
@@ -527,7 +526,7 @@ async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
     )
     await callback.answer("Importance threshold updated")
 
-@router.callback_query(F.data.startswith("custom_imp_"))
+@router.callback_query(lambda c: c.data.startswith("custom_imp_"))
 async def custom_importance(callback: CallbackQuery, state: FSMContext):
     """Handle custom importance input."""
     if callback.from_user.id != settings.OWNER_ID:
