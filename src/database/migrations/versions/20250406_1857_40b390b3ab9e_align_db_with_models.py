@@ -1,7 +1,7 @@
 """align_db_with_models
 
-Revision ID: 40b390b3ab9e
-Revises: e0953da18996
+Revision ID: 20250406_1857_40b390b3ab9e
+Revises: 20250406_1853_e0953da18996
 Create Date: 2024-04-06 18:57:00.000000
 
 """
@@ -14,8 +14,8 @@ from sqlalchemy import text
 
 
 # revision identifiers, used by Alembic.
-revision: str = '40b390b3ab9e'
-down_revision: Union[str, None] = 'e0953da18996'
+revision: str = '20250406_1857_40b390b3ab9e'
+down_revision: Union[str, None] = '20250406_1853_e0953da18996'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

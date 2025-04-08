@@ -1,7 +1,7 @@
 """add_last_summary_timestamp_to_chats
 
-Revision ID: 20250407_0623
-Revises: 20250406_2029
+Revision ID: 20250407_0623_add_last_summary_timestamp_to_chats
+Revises: 20250406_2029_add_response_probability_to_chats
 Create Date: 2024-04-07 06:23:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '20250407_0623'
-down_revision: Union[str, None] = '20250406_2029'
+revision: str = '20250407_0623_add_last_summary_timestamp_to_chats'
+down_revision: Union[str, None] = '20250406_2029_add_response_probability_to_chats'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1,7 +1,7 @@
 """add telegram_id to chats
 
 Revision ID: 20250408_0313_39084349b1d4
-Revises: 20250406_1820_9e1f012a388e
+Revises: 20250407_0623_add_last_summary_timestamp_to_chats
 Create Date: 2025-04-08 03:13:39.084349
 
 """
@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = '20250408_0313_39084349b1d4'
-down_revision: Union[str, None] = '20250406_1820_9e1f012a388e'
+down_revision: Union[str, None] = '20250407_0623_add_last_summary_timestamp_to_chats'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

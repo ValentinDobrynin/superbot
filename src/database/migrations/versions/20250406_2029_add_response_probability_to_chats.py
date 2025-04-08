@@ -1,7 +1,7 @@
 """add_response_probability_to_chats
 
-Revision ID: 20250406_2029
-Revises: 998bd13245d6
+Revision ID: 20250406_2029_add_response_probability_to_chats
+Revises: 20250406_2017_998bd13245d6
 Create Date: 2024-04-06 20:29:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '20250406_2029'
-down_revision: Union[str, None] = '998bd13245d6'
+revision: str = '20250406_2029_add_response_probability_to_chats'
+down_revision: Union[str, None] = '20250406_2017_998bd13245d6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

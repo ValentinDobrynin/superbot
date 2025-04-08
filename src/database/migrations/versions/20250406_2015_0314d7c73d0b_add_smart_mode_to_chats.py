@@ -1,7 +1,7 @@
 """add_smart_mode_to_chats
 
-Revision ID: 0314d7c73d0b
-Revises: 40b390b3ab9e
+Revision ID: 20250406_2015_0314d7c73d0b
+Revises: 20250406_1857_40b390b3ab9e
 Create Date: 2024-04-06 20:15:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0314d7c73d0b'
-down_revision: Union[str, None] = '40b390b3ab9e'
+revision: str = '20250406_2015_0314d7c73d0b'
+down_revision: Union[str, None] = '20250406_1857_40b390b3ab9e'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
