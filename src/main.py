@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 
 from .config import settings
 from .handlers import command_handler, message_handler, callback_handler
-from .database.database import init_db, get_session
+from .database.database import get_session
 from .middleware import DatabaseMiddleware
 from .services.notification_service import NotificationService
 from .services.stats_service import StatsService
@@ -42,9 +42,6 @@ async def main():
     )
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
-    
-    # Initialize database
-    await init_db()
     
     # Register middleware
     dp.message.middleware(DatabaseMiddleware())
