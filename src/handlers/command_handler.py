@@ -689,64 +689,56 @@ async def select_summary_period(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(lambda c: c.data.startswith("summ_period_"))
 async def generate_summary(callback: CallbackQuery, session: AsyncSession):
-    """Generate summary for selected period."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can generate summaries", show_alert=True)
-        return
-    
-    _, _, chat_id, period_type = callback.data.split("_")
-    chat = await session.get(Chat, chat_id)
-    
-    if not chat:
-        await callback.answer("Chat not found", show_alert=True)
-        return
-    
-    # Update chat title
-    await update_chat_title(callback.message, chat_id, session)
-    
-    # Get messages based on period type
-    now = datetime.now(timezone.utc)
-    if period_type == "last":
-        # Use last summary timestamp if available, otherwise use 24h
-        start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
-    elif period_type == "24h":
-        start_time = now - timedelta(days=1)
-    elif period_type == "custom":
-        # Store chat_id in state for custom hours input
-        await callback.message.edit_text(
-            "Enter number of hours to summarize:",
-            reply_markup=None
-        )
-        return
-    
-    # Get messages for the period
-    messages = await session.execute(
-        select(DBMessage)
-        .where(DBMessage.chat_id == chat_id)
-        .where(DBMessage.timestamp >= start_time)
-        .order_by(DBMessage.timestamp)
-    )
-    messages = messages.scalars().all()
-    
-    if not messages:
-        await callback.message.edit_text(
-            f"No messages found in {chat.name} for the selected period.",
-            reply_markup=None
-        )
-        return
-    
-    # Generate summary
-    context_service = ContextService(session)
-    summary = await context_service.generate_chat_summary(messages)
-    
-    # Update last summary timestamp
-    chat.last_summary_timestamp = now
-    await session.commit()
-    
-    await callback.message.edit_text(
-        summary,
-        parse_mode=None
-    )
+    """Generate summary for the selected chat."""
+    try:
+        # Разделяем по | вместо _
+        _, chat_id, period = callback.data.split("|")
+        async for session in get_session():
+            chat = await session.get(Chat, chat_id)
+            if not chat:
+                await callback.message.edit_text("❌ Чат не найден")
+                return
+
+            # Определяем временной диапазон
+            now = datetime.now(timezone.utc)
+            if period == "24h":
+                start_time = now - timedelta(hours=24)
+            elif period == "7d":
+                start_time = now - timedelta(days=7)
+            else:  # 30d
+                start_time = now - timedelta(days=30)
+
+            # Получаем сообщения за указанный период
+            messages_query = (
+                select(DBMessage)
+                .where(DBMessage.chat_id == chat.id)
+                .where(DBMessage.created_at >= start_time)
+                .order_by(DBMessage.created_at)
+            )
+            result = await session.execute(messages_query)
+            messages = result.scalars().all()
+
+            if not messages:
+                await callback.message.edit_text(f"❌ Нет сообщений за последние {period}")
+                return
+
+            # Генерируем контекст для суммаризации
+            context = await context_service.get_context_for_summary(chat, messages, session)
+            
+            # Генерируем суммаризацию
+            summary = await openai_service.generate_summary(context)
+            
+            # Обновляем timestamp последней суммаризации
+            chat.last_summary_timestamp = now
+            await session.commit()
+
+            # Отправляем суммаризацию
+            await callback.message.edit_text(
+                f"📊 Суммаризация за последние {period}:\n\n{summary}"
+            )
+    except Exception as e:
+        logger.error(f"Error in generate_summary: {e}")
+        await callback.message.edit_text("Произошла ошибка при генерации суммаризации.")
 
 @router.message(TestStates.waiting_for_hours)
 async def process_custom_hours(message: Message, state: FSMContext, session: AsyncSession):
