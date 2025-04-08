@@ -127,7 +127,7 @@ class StatsService:
         stats = MessageStats(
             chat_id=chat_id,
             period='week',
-            timestamp=now,  # This is already timezone-aware
+            timestamp=datetime.now(timezone.utc).replace(tzinfo=None),  # Convert to naive datetime
             message_count=message_count,
             user_count=user_count,
             avg_length=avg_length,
