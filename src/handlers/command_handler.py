@@ -347,94 +347,60 @@ async def set_probability_command(message: Message, session: AsyncSession):
         await message.answer("No chats found in database.")
         return
         
-    # Create keyboard with chat options
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{chat.name} ({chat.response_probability:.2f})",
-                callback_data=f"select_chat_prob_{chat.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer("Select a chat to set response probability:", reply_markup=markup)
-
-@router.callback_query(lambda c: c.data.startswith("select_chat_prob_"))
-async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSession):
-    """Process chat selection for probability setting."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-        
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    if not chats:
-        await callback.message.edit_text("No chats found in database.")
-        return
-        
     # Create keyboard with chat selection
     keyboard = []
     for chat in chats:
         keyboard.append([InlineKeyboardButton(
-            text=chat.name,
-            callback_data=f"select_chat|{chat.id}|{chat.name}"
+            text=f"{chat.name} ({chat.response_probability:.2f})",
+            callback_data=f"sel|{chat.id}"
         )])
     
-    await callback.message.edit_text(
+    await message.answer(
         "Select a chat to set response probability:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
-@router.callback_query(F.data.startswith("custom_prob_"))
-async def custom_probability(callback: CallbackQuery, state: FSMContext):
-    """Handle custom probability input."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-        
-    chat_id = callback.data.split("_")[2]
-    await state.set_state(TestStates.waiting_for_probability)
-    await state.update_data(chat_id=chat_id)
-    
-    await callback.message.edit_text(
-        "Enter custom probability (0.0 to 1.0):"
-    )
-
-@router.message(TestStates.waiting_for_probability)
-async def process_custom_probability(message: Message, state: FSMContext, session: AsyncSession):
-    """Process custom probability input."""
-    if message.from_user.id != settings.OWNER_ID:
-        await message.answer("You are not authorized to use this command.")
-        return
-        
+@router.callback_query(lambda c: c.data.startswith("sel|"))
+async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext):
+    """Handle chat selection for probability setting."""
     try:
-        prob = float(message.text)
-        if not 0 <= prob <= 1:
-            raise ValueError("Probability must be between 0 and 1")
-            
-        data = await state.get_data()
-        chat_id = data["chat_id"]
+        # Разделяем по | вместо _
+        _, chat_id = callback.data.split("|")
+        async for session in get_session():
+            chat = await session.get(Chat, chat_id)
+            if chat:
+                await state.update_data(selected_chat_id=chat_id)
+                await callback.message.edit_text(
+                    f"Выбран чат: {chat.name}\nВыберите вероятность ответа:",
+                    reply_markup=create_probability_keyboard(chat_id)
+                )
+            else:
+                await callback.message.edit_text("❌ Чат не найден")
+    except Exception as e:
+        logger.error(f"Error in select_chat_for_probability: {e}")
+        await callback.message.edit_text("Произошла ошибка при выборе чата.")
+
+@router.callback_query(lambda c: c.data.startswith("prob|"))
+async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
+    """Handle probability setting for selected chat."""
+    try:
+        # Разделяем по | вместо _
+        _, chat_id, prob = callback.data.split("|")
+        prob = float(prob)
         
-        # Get chat from database
-        result = await session.execute(select(Chat).where(Chat.id == chat_id))
-        chat = result.scalar_one_or_none()
-        
-        if not chat:
-            await message.answer("Chat not found in database.")
-            return
-            
-        # Update probability
-        chat.response_probability = prob
-        await session.commit()
-        
-        await message.answer(f"Response probability set to {prob:.2f} for {chat.name}")
-    except ValueError:
-        await message.answer("Please enter a valid number between 0 and 1.")
-    finally:
-        await state.clear()
+        async for session in get_session():
+            chat = await session.get(Chat, chat_id)
+            if chat:
+                chat.response_probability = prob
+                await session.commit()
+                await callback.message.edit_text(
+                    f"✅ Вероятность ответа для чата {chat.name} установлена на {prob:.1f}"
+                )
+            else:
+                await callback.message.edit_text("❌ Чат не найден")
+    except Exception as e:
+        logger.error(f"Error in set_chat_probability: {e}")
+        await callback.message.edit_text("Произошла ошибка при установке вероятности.")
 
 @router.message(Command("set_importance"))
 async def set_importance_command(message: Message, session: AsyncSession):
@@ -1426,46 +1392,4 @@ def create_probability_keyboard(chat_id: str) -> InlineKeyboardMarkup:
             text=f"{prob:.1f}",
             callback_data=callback_data
         )])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-@router.callback_query(lambda c: c.data.startswith("sel|"))
-async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext):
-    """Handle chat selection for probability setting."""
-    try:
-        # Разделяем по | вместо _
-        _, chat_id = callback.data.split("|")
-        async for session in get_session():
-            chat = await session.get(Chat, chat_id)
-            if chat:
-                await state.update_data(selected_chat_id=chat_id)
-                await callback.message.edit_text(
-                    f"Выбран чат: {chat.name}\nВыберите вероятность ответа:",
-                    reply_markup=create_probability_keyboard(chat_id)
-                )
-            else:
-                await callback.message.edit_text("❌ Чат не найден")
-    except Exception as e:
-        logger.error(f"Error in select_chat_for_probability: {e}")
-        await callback.message.edit_text("Произошла ошибка при выборе чата.")
-
-@router.callback_query(lambda c: c.data.startswith("prob|"))
-async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
-    """Handle probability setting for selected chat."""
-    try:
-        # Разделяем по | вместо _
-        _, chat_id, prob = callback.data.split("|")
-        prob = float(prob)
-        
-        async for session in get_session():
-            chat = await session.get(Chat, chat_id)
-            if chat:
-                chat.response_probability = prob
-                await session.commit()
-                await callback.message.edit_text(
-                    f"✅ Вероятность ответа для чата {chat.name} установлена на {prob:.1f}"
-                )
-            else:
-                await callback.message.edit_text("❌ Чат не найден")
-    except Exception as e:
-        logger.error(f"Error in set_chat_probability: {e}")
-        await callback.message.edit_text("Произошла ошибка при установке вероятности.") 
+    return InlineKeyboardMarkup(inline_keyboard=keyboard) 
