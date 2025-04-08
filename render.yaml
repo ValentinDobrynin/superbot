@@ -12,7 +12,15 @@ services:
       ls -la /opt/render/project/src
       echo "Checking migrations directory..."
       ls -la /opt/render/project/src/src/database/migrations/versions
-      cd /opt/render/project/src && \
+      echo "Running database migrations..."
+      cd /opt/render/project/src
+      echo "Current directory: $(pwd)"
+      echo "Python path: $PYTHONPATH"
+      echo "Listing migrations..."
+      python -m alembic history
+      echo "Current migration version..."
+      python -m alembic current
+      echo "Running upgrade..."
       PYTHONPATH=/opt/render/project/src python -m alembic -v upgrade head
     startCommand: PYTHONPATH=/opt/render/project/src python -m src.main
     envVars:
