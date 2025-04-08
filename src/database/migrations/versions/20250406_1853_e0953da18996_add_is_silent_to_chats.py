@@ -1,7 +1,7 @@
 """add_is_silent_to_chats
 
-Revision ID: e0953da18996
-Revises: 9e1f012a388e
+Revision ID: 20250406_1853_e0953da18996
+Revises: 20250406_1820_9e1f012a388e
 Create Date: 2024-04-06 18:53:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'e0953da18996'
-down_revision: Union[str, None] = '9e1f012a388e'
+revision: str = '20250406_1853_e0953da18996'
+down_revision: Union[str, None] = '20250406_1820_9e1f012a388e'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
