@@ -123,10 +123,11 @@ class StatsService:
         message_texts = [msg.text for msg in messages if msg.text]
         top_topics = await OpenAIService.analyze_topics(message_texts)
         
-        # Create stats object
+        # Create stats object with timezone-aware timestamp
         stats = MessageStats(
             chat_id=chat_id,
             period='week',
+            timestamp=now,  # This is already timezone-aware
             message_count=message_count,
             user_count=user_count,
             avg_length=avg_length,
