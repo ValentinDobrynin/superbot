@@ -1,10 +1,15 @@
 services:
-  - type: web
+  - type: background
     name: superbot
     env: python
-    buildCommand: pip install -r requirements.txt
+    region: frankfurt  # или другой регион по вашему выбору
+    plan: free
+    branch: main
+    buildCommand: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: |
-      alembic upgrade head
+      alembic upgrade head && \
       python -m src.main
     envVars:
       - key: PYTHON_VERSION
