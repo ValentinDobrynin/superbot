@@ -4,13 +4,13 @@ from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.sql import func
 from datetime import datetime, timedelta, timezone
 import logging
 import re
 
-from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext
+from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext, MessageStats
 from ..config import settings
 from ..services.openai_service import OpenAIService
 from ..services.context_service import ContextService
@@ -54,10 +54,8 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
             logger.info(f"Removed chat {chat_id} from database as bot was kicked")
         except Exception as e:
             if "chat not found" in str(e).lower():
-                logger.error(f"Chat {chat_id} not found in Telegram, removing from database")
-                await session.delete(chat)
-                await session.commit()
-                logger.info(f"Removed chat {chat_id} from database as it was not found in Telegram")
+                logger.error(f"Chat {chat_id} not found in Telegram, skipping title update")
+                # Don't delete the chat, just skip title update
             else:
                 logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
                 # Don't remove chat for other errors
