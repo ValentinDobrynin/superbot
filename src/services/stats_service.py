@@ -18,9 +18,8 @@ class StatsService:
     async def get_stats(self, chat_id: str, session: AsyncSession) -> MessageStats:
         """Get message statistics for a chat."""
         # Check cache first
-        cache_key = f"stats_{chat_id}"
-        if cache_key in self._cache:
-            cached_stats = self._cache[cache_key]
+        if chat_id in self._cache:
+            cached_stats = self._cache[chat_id]
             if datetime.now(timezone.utc) - cached_stats.timestamp < timedelta(minutes=5):
                 return cached_stats
         
@@ -39,7 +38,7 @@ class StatsService:
             stats = await self._calculate_stats(chat_id, session)
         
         # Update cache
-        self._cache[cache_key] = stats
+        self._cache[chat_id] = stats
         return stats
 
     async def _calculate_stats(self, chat_id: str, session: AsyncSession) -> MessageStats:
