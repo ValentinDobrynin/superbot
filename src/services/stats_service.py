@@ -8,6 +8,7 @@ import emoji
 from collections import Counter
 import asyncio
 from ..services.openai_service import OpenAIService
+from ..database.database import get_session
 
 class StatsService:
     def __init__(self):
@@ -146,13 +147,27 @@ class StatsService:
     async def start_periodic_update(self, session: AsyncSession):
         """Start periodic update of statistics."""
         while True:
-            # Get all chats
-            chats = await session.execute(select(Chat))
-            chats = chats.scalars().all()
-            
-            # Update stats for each chat
-            for chat in chats:
-                await self._calculate_stats(chat.id, session)
+            try:
+                # Create new session for each update
+                async for update_session in get_session():
+                    try:
+                        # Get all chats
+                        chats = await update_session.execute(select(Chat))
+                        chats = chats.scalars().all()
+                        
+                        # Update stats for each chat
+                        for chat in chats:
+                            await self._calculate_stats(chat.id, update_session)
+                        
+                        # Commit changes
+                        await update_session.commit()
+                    except Exception as e:
+                        await update_session.rollback()
+                        print(f"Error updating stats: {e}")
+                    finally:
+                        await update_session.close()
+            except Exception as e:
+                print(f"Error in periodic update: {e}")
             
             # Wait 5 minutes before next update
             await asyncio.sleep(300) 
