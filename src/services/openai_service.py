@@ -305,4 +305,44 @@ Message to analyze: {message}"""
             topics = json.loads(response.choices[0].message.content.strip())
             return topics
         except (json.JSONDecodeError, ValueError):
-            return [] 
+            return []
+
+    @staticmethod
+    async def _generate_style_guide(messages: List[str], chat_type: str) -> str:
+        """Generate style guide from messages."""
+        # Format messages for analysis
+        conversation_text = "\n".join(messages)
+        
+        # Create prompt for style analysis
+        prompt = f"""
+Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
+Consider the following aspects:
+1. Language style (formal/informal, technical/casual)
+2. Tone (friendly, professional, etc.)
+3. Emoji usage patterns
+4. Response structure and length
+5. Common phrases and expressions
+6. Response timing patterns
+7. Specific formatting preferences
+8. Topics of interest and expertise
+9. Typical response patterns to different types of messages
+
+Chat type: {chat_type}
+
+Conversation:
+{conversation_text}
+
+Create a comprehensive style guide that captures all these aspects.
+"""
+        
+        # Get style guide from OpenAI
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing communication styles and creating detailed style guides."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content.strip() 
