@@ -193,6 +193,10 @@ Message to analyze: {message}"""
         try:
             logger.info(f"Starting style refresh for chat type: {chat_type}, message count: {message_count}")
             
+            # Convert chat type to uppercase to match database
+            chat_type = chat_type.upper()
+            logger.info(f"Converted chat type to uppercase: {chat_type}")
+            
             # Get historical messages for this chat type
             query = select(DBMessage).join(Chat).where(Chat.type == chat_type)
             logger.info(f"Base query created: {query}")
