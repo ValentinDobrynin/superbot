@@ -228,49 +228,19 @@ Message to analyze: {message}"""
                 return "No messages found for analysis"
             
             # Format messages for analysis
-            conversation_text = "\n".join([
-                f"{'User' if msg.user_id != settings.OWNER_ID else 'Valentin'}: {msg.text}"
-                for msg in reversed(messages)  # Reverse to get chronological order
-            ])
-            logger.info(f"Formatted {len(messages)} messages for analysis")
+            formatted_messages = []
+            for msg in messages:
+                if msg.text:
+                    formatted_messages.append(msg.text)
             
-            # Create prompt for style analysis
-            prompt = f"""
-Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
-Consider the following aspects:
-1. Language style (formal/informal, technical/casual)
-2. Tone (friendly, professional, etc.)
-3. Emoji usage patterns
-4. Response structure and length
-5. Common phrases and expressions
-6. Response timing patterns
-7. Specific formatting preferences
-8. Topics of interest and expertise
-9. Typical response patterns to different types of messages
-
-Chat type: {chat_type}
-
-Conversation:
-{conversation_text}
-
-Create a comprehensive style guide that captures all these aspects.
-"""
+            logger.info(f"Formatted {len(formatted_messages)} messages for analysis")
             
-            # Get style guide from OpenAI
-            response = await client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an expert at analyzing communication styles and creating detailed style guides."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7
-            )
-            
-            style_guide = response.choices[0].message.content
+            # Analyze messages and generate style guide
+            style_guide = await OpenAIService._generate_style_guide(formatted_messages, chat_type.lower())
             
             # Update or create style in database
             style = await session.execute(
-                select(Style).where(Style.chat_type == ChatType(chat_type))
+                select(Style).where(Style.chat_type == ChatType(chat_type.lower()))
             )
             style = style.scalar_one_or_none()
             
@@ -279,7 +249,7 @@ Create a comprehensive style guide that captures all these aspects.
                 style.last_updated = datetime.now()
             else:
                 style = Style(
-                    chat_type=ChatType(chat_type),
+                    chat_type=ChatType(chat_type.lower()),
                     prompt_template=style_guide,
                     last_updated=datetime.now()
                 )
