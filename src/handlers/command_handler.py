@@ -950,19 +950,46 @@ async def process_dump_upload(message: Message, state: FSMContext, session: Asyn
 @router.message(Command("refresh"))
 async def refresh_command(message: Message, session: AsyncSession):
     """Refresh style for chat type."""
+    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+        return
+        
     try:
         # Get chat type from message
-        chat_type = message.text.split()[1] if len(message.text.split()) > 1 else None
-        if not chat_type:
-            await message.reply("Please specify chat type: /refresh <chat_type>")
+        args = message.text.split()
+        if len(args) < 2:
+            await message.reply(
+                "Please specify chat type:\n"
+                "/refresh work - for work chats\n"
+                "/refresh friendly - for friendly chats\n"
+                "/refresh mixed - for mixed chats"
+            )
             return
             
+        chat_type = args[1].lower()
+        if chat_type not in ["work", "friendly", "mixed"]:
+            await message.reply(
+                "Invalid chat type. Use:\n"
+                "work - for work chats\n"
+                "friendly - for friendly chats\n"
+                "mixed - for mixed chats"
+            )
+            return
+            
+        # Show loading message
+        await message.reply(f"🔄 Refreshing {chat_type} style profile...")
+        
         # Refresh style
         openai_service = OpenAIService()
         new_style = await openai_service.refresh_style(chat_type, session)
         
+        # Format style information
+        style_text = f"🎨 Style Profile for {chat_type.title()} Chats:\n\n"
+        style_text += f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        style_text += "Style Guide:\n"
+        style_text += new_style
+        
         # Send response
-        await message.reply(f"Style refreshed for {chat_type}:\n\n{new_style}")
+        await message.reply(style_text)
         
     except Exception as e:
         logger.error(f"Error refreshing style: {e}")
