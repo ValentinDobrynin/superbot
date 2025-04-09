@@ -137,6 +137,10 @@ async def process_message_for_learning(message: Message, chat: Chat, session: As
 
 async def process_message_and_respond(message: Message, chat: Chat, session: AsyncSession):
     """Process message and generate response."""
+    # Skip if message is from owner
+    if message.from_user.id == settings.OWNER_ID:
+        return
+        
     # Save message to database
     db_message = DBMessage(
         message_id=message.message_id,
