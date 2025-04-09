@@ -1,6 +1,6 @@
 from openai import AsyncOpenAI
 from ..config import settings
-from ..database.models import ChatType, Style
+from ..database.models import ChatType, Style, DBMessage, Chat
 import random
 import asyncio
 import numpy as np
@@ -8,6 +8,9 @@ from typing import List, Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY,
@@ -185,50 +188,85 @@ Message to analyze: {message}"""
         except ValueError:
             return 0.5  # Default to medium importance if parsing fails 
 
-    async def refresh_style(self, conversation_text: str, chat_type: str = None, session: AsyncSession = None) -> str:
-        """Refresh style guide based on conversation text."""
-        prompt = f"""Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
-        Consider the following aspects:
-        1. Language style (formal/informal, technical/casual)
-        2. Tone (friendly, professional, etc.)
-        3. Emoji usage patterns
-        4. Response structure and length
-        5. Common phrases and expressions
-        6. Response timing patterns
-        7. Specific formatting preferences
-        
-        Chat type: {chat_type or 'mixed'}
-        
-        Conversation:
-        {conversation_text}
-        
-        Create a comprehensive style guide that captures all these aspects."""
-        
-        new_style = await OpenAIService.chat_completion(prompt, temperature=0.7)
-        
-        # Save style to database if session is provided
-        if session and chat_type:
+    async def refresh_style(self, chat_type: str, session: AsyncSession) -> str:
+        """Refresh style guide for a chat type."""
+        try:
+            # Get historical messages for this chat type
+            messages = await session.execute(
+                select(DBMessage)
+                .join(Chat)
+                .where(Chat.type == chat_type)
+                .order_by(DBMessage.created_at.desc())
+                .limit(100)  # Analyze last 100 messages
+            )
+            messages = messages.scalars().all()
+            
+            if not messages:
+                return "No messages found for analysis"
+            
+            # Format messages for analysis
+            conversation_text = "\n".join([
+                f"{'User' if msg.user_id != settings.OWNER_ID else 'Valentin'}: {msg.text}"
+                for msg in reversed(messages)  # Reverse to get chronological order
+            ])
+            
+            # Create prompt for style analysis
+            prompt = f"""
+Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
+Consider the following aspects:
+1. Language style (formal/informal, technical/casual)
+2. Tone (friendly, professional, etc.)
+3. Emoji usage patterns
+4. Response structure and length
+5. Common phrases and expressions
+6. Response timing patterns
+7. Specific formatting preferences
+8. Topics of interest and expertise
+9. Typical response patterns to different types of messages
+
+Chat type: {chat_type}
+
+Conversation:
+{conversation_text}
+
+Create a comprehensive style guide that captures all these aspects.
+"""
+            
+            # Get style guide from OpenAI
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing communication styles and creating detailed style guides."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+            
+            style_guide = response.choices[0].message.content
+            
+            # Update or create style in database
             style = await session.execute(
                 select(Style).where(Style.chat_type == ChatType(chat_type.lower()))
             )
             style = style.scalar_one_or_none()
             
             if style:
-                style.prompt_template = new_style
+                style.prompt_template = style_guide
                 style.last_updated = datetime.utcnow()
-                style.training_data = conversation_text
             else:
                 style = Style(
                     chat_type=ChatType(chat_type.lower()),
-                    prompt_template=new_style,
-                    last_updated=datetime.utcnow(),
-                    training_data=conversation_text
+                    prompt_template=style_guide,
+                    last_updated=datetime.utcnow()
                 )
                 session.add(style)
             
             await session.commit()
-        
-        return new_style
+            return style_guide
+            
+        except Exception as e:
+            logger.error(f"Error refreshing style: {e}")
+            raise
 
     @staticmethod
     async def analyze_topics(messages: List[str]) -> List[Dict[str, int]]:
