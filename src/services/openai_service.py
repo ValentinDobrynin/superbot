@@ -7,7 +7,7 @@ import numpy as np
 from typing import List, Optional, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -188,17 +188,28 @@ Message to analyze: {message}"""
         except ValueError:
             return 0.5  # Default to medium importance if parsing fails 
 
-    async def refresh_style(self, chat_type: str, session: AsyncSession) -> str:
+    async def refresh_style(self, chat_type: str, session: AsyncSession, message_count: str = "100") -> str:
         """Refresh style guide for a chat type."""
         try:
             # Get historical messages for this chat type
-            messages = await session.execute(
-                select(DBMessage)
-                .join(Chat)
-                .where(Chat.type == chat_type)
-                .order_by(DBMessage.created_at.desc())
-                .limit(100)  # Analyze last 100 messages
-            )
+            query = select(DBMessage).join(Chat).where(Chat.type == chat_type)
+            
+            # Apply message count filter
+            if message_count == "week":
+                # Get messages from the last week
+                week_ago = datetime.now() - timedelta(days=7)
+                query = query.where(DBMessage.created_at >= week_ago)
+            else:
+                # Get last N messages
+                try:
+                    count = int(message_count)
+                    query = query.order_by(DBMessage.created_at.desc()).limit(count)
+                except ValueError:
+                    # Default to 100 if invalid count
+                    query = query.order_by(DBMessage.created_at.desc()).limit(100)
+            
+            # Execute query
+            messages = await session.execute(query)
             messages = messages.scalars().all()
             
             if not messages:
@@ -246,18 +257,18 @@ Create a comprehensive style guide that captures all these aspects.
             
             # Update or create style in database
             style = await session.execute(
-                select(Style).where(Style.chat_type == ChatType(chat_type.lower()))
+                select(Style).where(Style.chat_type == ChatType(chat_type))
             )
             style = style.scalar_one_or_none()
             
             if style:
                 style.prompt_template = style_guide
-                style.last_updated = datetime.utcnow()
+                style.last_updated = datetime.now()
             else:
                 style = Style(
-                    chat_type=ChatType(chat_type.lower()),
+                    chat_type=ChatType(chat_type),
                     prompt_template=style_guide,
-                    last_updated=datetime.utcnow()
+                    last_updated=datetime.now()
                 )
                 session.add(style)
             

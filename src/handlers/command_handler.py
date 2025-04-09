@@ -975,12 +975,60 @@ async def refresh_command(message: Message, session: AsyncSession):
             )
             return
             
-        # Show loading message
-        await message.reply(f"🔄 Refreshing {chat_type} style profile...")
+        # Create keyboard with message count options
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 100 messages",
+                    callback_data=f"refresh_count_{chat_type}_100"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 200 messages",
+                    callback_data=f"refresh_count_{chat_type}_200"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 500 messages",
+                    callback_data=f"refresh_count_{chat_type}_500"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 All messages (last week)",
+                    callback_data=f"refresh_count_{chat_type}_week"
+                )
+            ]
+        ]
         
-        # Refresh style
+        await message.reply(
+            f"Select how many messages to analyze for {chat_type} style profile:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in refresh command: {e}")
+        await message.reply("Sorry, I couldn't process your request. Please try again later.")
+
+@router.callback_query(lambda c: c.data.startswith("refresh_count_"))
+async def refresh_style_with_count(callback: CallbackQuery, session: AsyncSession):
+    """Refresh style with selected message count."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can refresh style profiles", show_alert=True)
+        return
+    
+    try:
+        # Get chat type and count from callback data
+        _, _, chat_type, count = callback.data.split("_")
+        
+        # Show loading message
+        await callback.message.edit_text(f"🔄 Refreshing {chat_type} style profile...")
+        
+        # Refresh style with selected count
         openai_service = OpenAIService()
-        new_style = await openai_service.refresh_style(chat_type, session)
+        new_style = await openai_service.refresh_style(chat_type, session, message_count=count)
         
         # Format style information
         style_text = f"🎨 Style Profile for {chat_type.title()} Chats:\n\n"
@@ -988,12 +1036,22 @@ async def refresh_command(message: Message, session: AsyncSession):
         style_text += "Style Guide:\n"
         style_text += new_style
         
-        # Send response
-        await message.reply(style_text)
+        # Add refresh button
+        keyboard = [[
+            InlineKeyboardButton(
+                text="🔄 Refresh Again",
+                callback_data=f"refresh_count_{chat_type}_{count}"
+            )
+        ]]
+        
+        await callback.message.edit_text(
+            style_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
         
     except Exception as e:
-        logger.error(f"Error refreshing style: {e}")
-        await message.reply("Sorry, I couldn't refresh the style. Please try again later.")
+        logger.error(f"Error refreshing style profile: {e}")
+        await callback.message.edit_text("Sorry, I couldn't refresh the style profile.")
 
 @router.message(Command("test"))
 async def test_command(message: Message, session: AsyncSession):
