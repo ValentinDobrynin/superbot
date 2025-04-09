@@ -191,28 +191,36 @@ Message to analyze: {message}"""
     async def refresh_style(self, chat_type: str, session: AsyncSession, message_count: str = "100") -> str:
         """Refresh style guide for a chat type."""
         try:
+            logger.info(f"Starting style refresh for chat type: {chat_type}, message count: {message_count}")
+            
             # Get historical messages for this chat type
             query = select(DBMessage).join(Chat).where(Chat.type == chat_type)
+            logger.info(f"Base query created: {query}")
             
             # Apply message count filter
             if message_count == "week":
                 # Get messages from the last week
                 week_ago = datetime.now() - timedelta(days=7)
                 query = query.where(DBMessage.created_at >= week_ago)
+                logger.info(f"Week filter applied, from: {week_ago}")
             else:
                 # Get last N messages
                 try:
                     count = int(message_count)
                     query = query.order_by(DBMessage.created_at.desc()).limit(count)
+                    logger.info(f"Count filter applied: {count} messages")
                 except ValueError:
                     # Default to 100 if invalid count
                     query = query.order_by(DBMessage.created_at.desc()).limit(100)
+                    logger.info("Invalid count, defaulting to 100 messages")
             
             # Execute query
             messages = await session.execute(query)
             messages = messages.scalars().all()
+            logger.info(f"Query executed, found {len(messages)} messages")
             
             if not messages:
+                logger.warning(f"No messages found for chat type: {chat_type}")
                 return "No messages found for analysis"
             
             # Format messages for analysis
@@ -220,6 +228,7 @@ Message to analyze: {message}"""
                 f"{'User' if msg.user_id != settings.OWNER_ID else 'Valentin'}: {msg.text}"
                 for msg in reversed(messages)  # Reverse to get chronological order
             ])
+            logger.info(f"Formatted {len(messages)} messages for analysis")
             
             # Create prompt for style analysis
             prompt = f"""
