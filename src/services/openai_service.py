@@ -257,8 +257,8 @@ Create a comprehensive style guide that captures all these aspects.
 """
             
             # Get style guide from OpenAI
-            response = await self.client.chat.completions.create(
-                model=self.model,
+            response = await client.chat.completions.create(
+                model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": "You are an expert at analyzing communication styles and creating detailed style guides."},
                     {"role": "user", "content": prompt}
