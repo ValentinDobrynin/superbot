@@ -240,17 +240,23 @@ class ContextService:
         ])
         
         # Create prompt for summarization
-        prompt = f"""Please analyze the following chat messages and provide a concise summary. 
-Focus on the main topics discussed, key decisions made, and any important information shared.
+        prompt = f"""Прочитай переписку и коротко перескажи, о чём шёл разговор — так, как будто пересказываешь другу.
+Пиши естественно и живо, без лишней формальности.
+Можно упомянуть общее настроение, интересные моменты и то, что людям было важно.
+Пиши на том же языке, на котором был чат.
 
-Chat Messages:
-{messages_text}
+Формат:
 
-Please provide a summary in the following format:
-1. Main Topics: [list main topics discussed]
-2. Key Decisions: [list any decisions made]
-3. Important Information: [list important information shared]
-4. Overall Tone: [describe the overall tone of the conversation]"""
+О чём говорили: [Ключевые темы — простыми словами]
+
+Что решили / запланировали: [Итоги, договорённости, планы]
+
+Что запомнилось: [Интересные, эмоциональные или неожиданные моменты]
+
+Какая была атмосфера: [Общее настроение — например, дружелюбная, напряжённая, весёлая и т.д.]
+
+Чат:
+{messages_text}"""
 
         # Generate summary using OpenAI
         openai_service = OpenAIService()
