@@ -205,9 +205,29 @@ class ContextService:
         if not messages:
             return "No messages to summarize."
         
+        # Get unique user IDs from messages
+        user_ids = set(msg.user_id for msg in messages)
+        
+        # Create a dictionary to store user names
+        user_names = {}
+        
+        # Get the first message to access the bot
+        first_msg = messages[0]
+        chat = first_msg.chat
+        
+        # Get user names from Telegram API
+        for user_id in user_ids:
+            try:
+                # Try to get user info from Telegram
+                user = await first_msg.bot.get_chat_member(chat.telegram_id, user_id)
+                user_names[user_id] = user.user.first_name
+            except Exception as e:
+                logger.error(f"Error getting user info for {user_id}: {e}")
+                user_names[user_id] = f"User {user_id}"
+        
         # Prepare messages for summarization
         messages_text = "\n".join([
-            f"{msg.created_at.strftime('%Y-%m-%d %H:%M')} - User {msg.user_id}: {msg.text}"
+            f"{msg.created_at.strftime('%Y-%m-%d %H:%M')} - {user_names.get(msg.user_id, f'User {msg.user_id}')}: {msg.text}"
             for msg in messages
         ])
         
