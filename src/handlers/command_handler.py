@@ -708,6 +708,8 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         if period_type == "last":
             # Use last summary timestamp if available, otherwise use 24h
             start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
+            if start_time and not start_time.tzinfo:
+                start_time = start_time.replace(tzinfo=timezone.utc)
         elif period_type == "24h":
             start_time = now - timedelta(days=1)
         elif period_type == "custom":
@@ -740,7 +742,7 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         summary = await context_service.generate_chat_summary(messages)
         
         # Обновляем timestamp последней суммаризации
-        chat.last_summary_timestamp = now
+        chat.last_summary_timestamp = now.replace(tzinfo=None)  # Convert to naive datetime
         await session.commit()
 
         # Отправляем суммаризацию
