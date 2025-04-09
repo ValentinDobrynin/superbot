@@ -948,29 +948,24 @@ async def process_dump_upload(message: Message, state: FSMContext, session: Asyn
 
 @router.message(Command("refresh"))
 async def refresh_command(message: Message, session: AsyncSession):
-    """Refresh style guide."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all messages
-    messages = await session.execute(select(DBMessage).order_by(DBMessage.timestamp))
-    messages = messages.scalars().all()
-    
-    if not messages:
-        await message.answer("❌ No messages found")
-        return
+    """Refresh style for chat type."""
+    try:
+        # Get chat type from message
+        chat_type = message.text.split()[1] if len(message.text.split()) > 1 else None
+        if not chat_type:
+            await message.reply("Please specify chat type: /refresh <chat_type>")
+            return
+            
+        # Refresh style
+        openai_service = OpenAIService()
+        new_style = await openai_service.refresh_style(chat_type, session)
         
-    # Format messages for training
-    conversation_text = "\n".join([
-        f"{'User' if msg.user_id != settings.OWNER_ID else 'Valentin'}: {msg.text}"
-        for msg in messages
-    ])
-    
-    # Refresh style
-    openai_service = OpenAIService()
-    new_style = await openai_service.refresh_style(conversation_text)
-    
-    await message.answer(f"✅ Style guide refreshed:\n\n{new_style}")
+        # Send response
+        await message.reply(f"Style refreshed for {chat_type}:\n\n{new_style}")
+        
+    except Exception as e:
+        logger.error(f"Error refreshing style: {e}")
+        await message.reply("Sorry, I couldn't refresh the style. Please try again later.")
 
 @router.message(Command("test"))
 async def test_command(message: Message, session: AsyncSession):

@@ -1,10 +1,13 @@
 from openai import AsyncOpenAI
 from ..config import settings
-from ..database.models import ChatType
+from ..database.models import ChatType, Style
 import random
 import asyncio
 import numpy as np
 from typing import List, Optional, Dict
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from datetime import datetime
 
 client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY,
@@ -13,15 +16,27 @@ client = AsyncOpenAI(
 
 class OpenAIService:
     @staticmethod
+    async def get_style_for_chat_type(session, chat_type: ChatType) -> str:
+        """Get style guide for chat type from database."""
+        style = await session.execute(
+            select(Style).where(Style.chat_type == chat_type)
+        )
+        style = style.scalar_one_or_none()
+        return style.prompt_template if style else ""
+
+    @staticmethod
     async def generate_response(
         message: str,
         chat_type: ChatType,
         context_messages: list,
-        style_prompt: str
+        session: AsyncSession
     ) -> str:
         # Add random delay to simulate human behavior
         delay = random.uniform(settings.MIN_RESPONSE_DELAY, settings.MAX_RESPONSE_DELAY)
         await asyncio.sleep(delay)
+        
+        # Get style from database
+        style_prompt = await OpenAIService.get_style_for_chat_type(session, chat_type)
         
         # Prepare context from recent messages
         # Все сообщения считаем сообщениями от пользователей
@@ -170,7 +185,7 @@ Message to analyze: {message}"""
         except ValueError:
             return 0.5  # Default to medium importance if parsing fails 
 
-    async def refresh_style(self, conversation_text: str, chat_type: str = None) -> str:
+    async def refresh_style(self, conversation_text: str, chat_type: str = None, session: AsyncSession = None) -> str:
         """Refresh style guide based on conversation text."""
         prompt = f"""Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
         Consider the following aspects:
@@ -189,7 +204,31 @@ Message to analyze: {message}"""
         
         Create a comprehensive style guide that captures all these aspects."""
         
-        return await OpenAIService.chat_completion(prompt, temperature=0.7)
+        new_style = await OpenAIService.chat_completion(prompt, temperature=0.7)
+        
+        # Save style to database if session is provided
+        if session and chat_type:
+            style = await session.execute(
+                select(Style).where(Style.chat_type == ChatType(chat_type.lower()))
+            )
+            style = style.scalar_one_or_none()
+            
+            if style:
+                style.prompt_template = new_style
+                style.last_updated = datetime.utcnow()
+                style.training_data = conversation_text
+            else:
+                style = Style(
+                    chat_type=ChatType(chat_type.lower()),
+                    prompt_template=new_style,
+                    last_updated=datetime.utcnow(),
+                    training_data=conversation_text
+                )
+                session.add(style)
+            
+            await session.commit()
+        
+        return new_style
 
     @staticmethod
     async def analyze_topics(messages: List[str]) -> List[Dict[str, int]]:
