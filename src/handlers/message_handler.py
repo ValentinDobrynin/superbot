@@ -182,7 +182,7 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
         # Generate response
         response = await openai_service.generate_response(
             message=message.text,
-            chat_type=ChatType(chat.type),
+            chat_type=ChatType(chat.type.lower()),
             context_messages=context_messages,
             style_prompt=""  # TODO: Add style prompt
         )
@@ -198,7 +198,7 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
             openai_service = OpenAIService()
             response = await openai_service.generate_response(
                 message=message.text,
-                chat_type=ChatType(chat.type),
+                chat_type=ChatType(chat.type.lower()),
                 context_messages=context_messages,
                 style_prompt=""  # TODO: Add style prompt
             )
