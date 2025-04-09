@@ -155,6 +155,17 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
     context_service = ContextService(session)
     thread = await context_service.get_or_create_thread(chat.id)
     
+    # Get recent messages for context
+    query = select(DBMessage).where(
+        DBMessage.chat_id == chat.id
+    ).order_by(DBMessage.created_at.desc()).limit(5)
+    result = await session.execute(query)
+    recent_messages = result.scalars().all()
+    context_messages = [
+        {"text": msg.text, "is_user": msg.user_id != settings.OWNER_ID}
+        for msg in reversed(recent_messages)
+    ]
+    
     # Generate response based on chat settings
     if chat.smart_mode:
         # Use smart mode for response generation
@@ -167,7 +178,12 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
             return
             
         # Generate response
-        response = await openai_service.generate_response(message.text, thread.topic)
+        response = await openai_service.generate_response(
+            message=message.text,
+            chat_type=ChatType(chat.type),
+            context_messages=context_messages,
+            style_prompt=""  # TODO: Add style prompt
+        )
         if response:
             await message.answer(response)
             db_message.was_responded = True
@@ -178,7 +194,12 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
             # Generate simple response
             from ..services.openai_service import OpenAIService
             openai_service = OpenAIService()
-            response = await openai_service.generate_response(message.text, thread.topic)
+            response = await openai_service.generate_response(
+                message=message.text,
+                chat_type=ChatType(chat.type),
+                context_messages=context_messages,
+                style_prompt=""  # TODO: Add style prompt
+            )
             if response:
                 await message.answer(response)
                 db_message.was_responded = True
