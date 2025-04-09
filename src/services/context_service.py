@@ -207,6 +207,7 @@ class ContextService:
         
         # Get unique user IDs from messages
         user_ids = set(msg.user_id for msg in messages)
+        logger.info(f"Found {len(user_ids)} unique users in messages")
         
         # Create a dictionary to store user names
         user_names = {}
@@ -220,9 +221,16 @@ class ContextService:
             try:
                 # Try to get user info from Telegram
                 user = await first_msg.bot.get_chat_member(chat.telegram_id, user_id)
-                user_names[user_id] = user.user.first_name
+                if user and user.user:
+                    user_names[user_id] = user.user.first_name
+                    if user.user.last_name:
+                        user_names[user_id] += f" {user.user.last_name}"
+                    logger.info(f"Successfully got name for user {user_id}: {user_names[user_id]}")
+                else:
+                    logger.warning(f"User info is incomplete for {user_id}")
+                    user_names[user_id] = f"User {user_id}"
             except Exception as e:
-                logger.error(f"Error getting user info for {user_id}: {e}")
+                logger.error(f"Error getting user info for {user_id}: {e}", exc_info=True)
                 user_names[user_id] = f"User {user_id}"
         
         # Prepare messages for summarization
