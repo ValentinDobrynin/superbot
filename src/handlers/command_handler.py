@@ -110,7 +110,8 @@ async def help_command(message: Message, session: AsyncSession):
 /thread - Manage message threads
 
 🔒 System:
-/shutdown - Toggle global silent mode"""
+/shutdown - Toggle global silent mode
+/style - View current style profiles"""
     
     await message.answer(help_text, parse_mode=None)
 
@@ -1393,4 +1394,123 @@ def create_probability_keyboard(chat_id: str) -> InlineKeyboardMarkup:
             text=f"{prob:.1f}",
             callback_data=callback_data
         )])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard) 
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@router.message(Command("style"))
+async def style_command(message: Message, session: AsyncSession):
+    """View current style profiles."""
+    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+        return
+    
+    # Create keyboard with style type options
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="💼 Work Style",
+                callback_data="view_style_work"
+            ),
+            InlineKeyboardButton(
+                text="😊 Friendly Style",
+                callback_data="view_style_friendly"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🤝 Mixed Style",
+                callback_data="view_style_mixed"
+            )
+        ]
+    ]
+    
+    await message.answer(
+        "Select style type to view:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@router.callback_query(lambda c: c.data.startswith("view_style_"))
+async def view_style_profile(callback: CallbackQuery, session: AsyncSession):
+    """View style profile for selected type."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can view style profiles", show_alert=True)
+        return
+    
+    try:
+        # Get style type from callback data
+        style_type = callback.data.split("_")[2]
+        
+        # Get style from database
+        style = await session.execute(
+            select(Style).where(Style.chat_type == ChatType(style_type))
+        )
+        style = style.scalar_one_or_none()
+        
+        if not style:
+            await callback.message.edit_text(
+                f"No style profile found for {style_type} chats.\n"
+                "Use /refresh {style_type} to create one."
+            )
+            return
+        
+        # Format style information
+        style_text = f"🎨 Style Profile for {style_type.title()} Chats:\n\n"
+        style_text += f"Last Updated: {style.last_updated.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        style_text += "Style Guide:\n"
+        style_text += style.prompt_template
+        
+        # Add refresh button
+        keyboard = [[
+            InlineKeyboardButton(
+                text="🔄 Refresh Style",
+                callback_data=f"refresh_style_{style_type}"
+            )
+        ]]
+        
+        await callback.message.edit_text(
+            style_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error viewing style profile: {e}")
+        await callback.message.edit_text("Sorry, I couldn't retrieve the style profile.")
+
+@router.callback_query(lambda c: c.data.startswith("refresh_style_"))
+async def refresh_style_callback(callback: CallbackQuery, session: AsyncSession):
+    """Refresh style profile for selected type."""
+    if callback.from_user.id != settings.OWNER_ID:
+        await callback.answer("Only the owner can refresh style profiles", show_alert=True)
+        return
+    
+    try:
+        # Get style type from callback data
+        style_type = callback.data.split("_")[2]
+        
+        # Show loading message
+        await callback.message.edit_text(f"🔄 Refreshing {style_type} style profile...")
+        
+        # Refresh style
+        openai_service = OpenAIService()
+        new_style = await openai_service.refresh_style(style_type, session)
+        
+        # Format style information
+        style_text = f"🎨 Style Profile for {style_type.title()} Chats:\n\n"
+        style_text += f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        style_text += "Style Guide:\n"
+        style_text += new_style
+        
+        # Add refresh button
+        keyboard = [[
+            InlineKeyboardButton(
+                text="🔄 Refresh Again",
+                callback_data=f"refresh_style_{style_type}"
+            )
+        ]]
+        
+        await callback.message.edit_text(
+            style_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error refreshing style profile: {e}")
+        await callback.message.edit_text("Sorry, I couldn't refresh the style profile.") 
