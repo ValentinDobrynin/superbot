@@ -161,8 +161,10 @@ async def process_message_and_respond(message: Message, chat: Chat, session: Asy
     ).order_by(DBMessage.created_at.desc()).limit(5)
     result = await session.execute(query)
     recent_messages = result.scalars().all()
+    
+    # Все сообщения считаем сообщениями от пользователей, кроме сообщений от бота
     context_messages = [
-        {"text": msg.text, "is_user": msg.user_id != settings.OWNER_ID}
+        {"text": msg.text, "is_user": True}
         for msg in reversed(recent_messages)
     ]
     

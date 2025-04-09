@@ -24,8 +24,8 @@ class OpenAIService:
         await asyncio.sleep(delay)
         
         # Prepare context from recent messages
-        context = "\n".join([f"{'User' if msg['is_user'] else 'Valentin'}: {msg['text']}" 
-                           for msg in context_messages])
+        # Все сообщения считаем сообщениями от пользователей
+        context = "\n".join([f"User: {msg['text']}" for msg in context_messages])
         
         # Construct the prompt
         prompt = f"""You are simulating a Telegram user named Valentin. Based on the user's historical messages and reactions in the chat, you have learned their communication style, tone, frequency of replies, and typical triggers for engaging in conversation.
