@@ -773,20 +773,30 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         
         for msg in messages:
             # Подсчет слов (исключая только стоп-слова)
-            words = [word.lower() for word in re.findall(r'\b\w+\b', msg.content) 
+            words = [word.lower() for word in re.findall(r'\b\w+\b', msg.text) 
                     if word.lower() not in stop_words]
             word_counts.update(words)
-            total_length += len(msg.content)
+            total_length += len(msg.text)
             
             # Подсчет эмодзи
-            emojis = re.findall(r'[\U0001F300-\U0001F9FF]', msg.content)
+            emojis = re.findall(r'[\U0001F300-\U0001F9FF]', msg.text)
             emoji_counts.update(emojis)
             
             message_times.append(msg.created_at)
 
         # Генерируем контекст для суммаризации
         context_service = ContextService(session)
-        summary = await context_service.generate_chat_summary(messages)
+        context = await context_service.get_context_for_summary(chat.id)
+        
+        # Форматируем сообщения для суммаризации
+        formatted_messages = []
+        for msg in messages:
+            if msg.text:  # Changed from msg.content to msg.text
+                formatted_messages.append({
+                    'text': msg.text,  # Changed from msg.content to msg.text
+                    'user_id': msg.user_id,
+                    'created_at': msg.created_at
+                })
         
         # Обновляем timestamp последней суммаризации
         chat.last_summary_timestamp = now.replace(tzinfo=None)  # Convert to naive datetime
@@ -794,7 +804,7 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
 
         # Отправляем суммаризацию
         await callback.message.edit_text(
-            f"📊 Суммаризация для {chat.name}:\n\n{summary}"
+            f"📊 Суммаризация для {chat.name}:\n\n{context}"
         )
     except Exception as e:
         logger.error(f"Error in generate_summary: {e}")
