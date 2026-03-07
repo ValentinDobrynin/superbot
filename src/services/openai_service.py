@@ -316,22 +316,22 @@ Message to analyze: {message}"""
         # Create prompt for style analysis
         prompt = f"""
 Analyze the following conversation and create a detailed style guide for imitating the communication style of Valentin. 
-Consider the following aspects:
-1. Language style (formal/informal, technical/casual)
-2. Tone (friendly, professional, etc.)
-3. Emoji usage patterns
-4. Response structure and length
-5. Common phrases and expressions
-6. Response timing patterns
-7. Specific formatting preferences
+        Consider the following aspects:
+        1. Language style (formal/informal, technical/casual)
+        2. Tone (friendly, professional, etc.)
+        3. Emoji usage patterns
+        4. Response structure and length
+        5. Common phrases and expressions
+        6. Response timing patterns
+        7. Specific formatting preferences
 8. Topics of interest and expertise
 9. Typical response patterns to different types of messages
-
+        
 Chat type: {chat_type}
-
-Conversation:
-{conversation_text}
-
+        
+        Conversation:
+        {conversation_text}
+        
 Create a comprehensive style guide that captures all these aspects.
 """
         

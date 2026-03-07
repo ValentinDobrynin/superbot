@@ -48,18 +48,18 @@ async def update_chat_title(message: Message, chat_id: int, session: AsyncSessio
                 logger.info(f"Updated chat title for chat_id: {chat_id}")
             else:
                 logger.info(f"Chat title is already up to date: {chat.name}")
-        except TelegramForbiddenError as e:
-            logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
-            # Remove chat from database if bot was kicked
+    except TelegramForbiddenError as e:
+        logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
+        # Remove chat from database if bot was kicked
             await session.delete(chat)
             await session.commit()
             logger.info(f"Removed chat {chat_id} from database as bot was kicked")
-        except Exception as e:
+    except Exception as e:
             if "chat not found" in str(e).lower():
                 logger.error(f"Chat {chat_id} not found in Telegram, skipping title update")
                 # Don't delete the chat, just skip title update
             else:
-                logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
+        logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
                 # Don't remove chat for other errors
     except Exception as e:
         logger.error(f"Error in update_chat_title for chat_id {chat_id}: {str(e)}")
@@ -272,7 +272,7 @@ async def setmode_command(message: Message, session: AsyncSession):
     """Toggle silent mode in a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     # Get all chats
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
@@ -300,7 +300,7 @@ async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("You are not authorized to use this command.")
         return
-        
+    
     chat_id = callback.data.split("_")[2]
     
     # Get chat from database
@@ -312,9 +312,9 @@ async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
         return
         
     # Toggle silent mode
-    chat.is_silent = not chat.is_silent
-    await session.commit()
-    
+        chat.is_silent = not chat.is_silent
+        await session.commit()
+        
     # Update keyboard
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
@@ -341,7 +341,7 @@ async def set_probability_command(message: Message, session: AsyncSession):
     """Set response probability for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     # Get all chats
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
@@ -370,10 +370,10 @@ async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext
         # Разделяем по | вместо _
         _, chat_id = callback.data.split("|")
         async for session in get_session():
-            chat = await session.get(Chat, chat_id)
-            if chat:
+    chat = await session.get(Chat, chat_id)
+    if chat:
                 await state.update_data(selected_chat_id=chat_id)
-                await callback.message.edit_text(
+        await callback.message.edit_text(
                     f"Выбран чат: {chat.name}\nВыберите вероятность ответа:",
                     reply_markup=create_probability_keyboard(chat_id)
                 )
@@ -392,14 +392,14 @@ async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
         prob = float(prob)
         
         async for session in get_session():
-            chat = await session.get(Chat, chat_id)
-            if chat:
+        chat = await session.get(Chat, chat_id)
+        if chat:
                 chat.response_probability = prob
-                await session.commit()
+            await session.commit()
                 await callback.message.edit_text(
                     f"✅ Вероятность ответа для чата {chat.name} установлена на {prob:.1f}"
                 )
-            else:
+        else:
                 await callback.message.edit_text("❌ Чат не найден")
     except Exception as e:
         logger.error(f"Error in set_chat_probability: {e}")
@@ -410,7 +410,7 @@ async def set_importance_command(message: Message, session: AsyncSession):
     """Set importance threshold for a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     # Get all chats
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
@@ -451,7 +451,7 @@ async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSess
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("You are not authorized to use this command.")
         return
-        
+    
     chat_id = callback.data.split("_")[3]
     
     # Get chat from database
@@ -461,7 +461,7 @@ async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSess
     if not chat:
         await callback.answer("Chat not found in database.")
         return
-        
+    
     await callback.message.edit_text(
         f"Select importance threshold for {chat.name}:",
         reply_markup=create_importance_keyboard(chat_id)
@@ -473,7 +473,7 @@ async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("You are not authorized to use this command.")
         return
-        
+    
     # Разделяем по | вместо _
     _, chat_id, imp = callback.data.split("|")
     imp = float(imp)
@@ -488,11 +488,11 @@ async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
         
     # Update importance threshold
     chat.importance_threshold = imp
-    await session.commit()
-    
-    await callback.message.edit_text(
+        await session.commit()
+        
+        await callback.message.edit_text(
         f"Importance threshold set to {imp:.2f} for {chat.name}"
-    )
+        )
     await callback.answer("Importance threshold updated")
 
 @router.callback_query(lambda c: c.data.startswith("custom_imp_"))
@@ -501,7 +501,7 @@ async def custom_importance(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("You are not authorized to use this command.")
         return
-        
+    
     chat_id = callback.data.split("_")[2]
     await state.set_state(TestStates.waiting_for_importance)
     await state.update_data(chat_id=chat_id)
@@ -516,7 +516,7 @@ async def process_custom_importance(message: Message, state: FSMContext, session
     if message.from_user.id != settings.OWNER_ID:
         await message.answer("You are not authorized to use this command.")
         return
-        
+    
     try:
         imp = float(message.text)
         if not 0 <= imp <= 1:
@@ -535,20 +535,20 @@ async def process_custom_importance(message: Message, state: FSMContext, session
             
         # Update importance threshold
         chat.importance_threshold = imp
-        await session.commit()
-        
+            await session.commit()
+    
         await message.answer(f"Importance threshold set to {imp:.2f} for {chat.name}")
     except ValueError:
         await message.answer("Please enter a valid number between 0 and 1.")
     finally:
-        await state.clear()
+    await state.clear()
 
 @router.message(Command("smart_mode"))
 async def smart_mode_command(message: Message, session: AsyncSession):
     """Toggle smart mode in a chat."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     # Get all chats
     result = await session.execute(select(Chat))
     chats = result.scalars().all()
@@ -576,7 +576,7 @@ async def process_smart_mode_callback(callback_query: CallbackQuery, session: As
     if callback_query.from_user.id != settings.OWNER_ID:
         await callback_query.answer("You are not authorized to use this command.")
         return
-        
+    
     chat_id = callback_query.data.split("_")[2]
     
     # Get chat from database
@@ -586,7 +586,7 @@ async def process_smart_mode_callback(callback_query: CallbackQuery, session: As
     if not chat:
         await callback_query.answer("Chat not found in database.")
         return
-        
+    
     # Toggle smart mode
     chat.smart_mode = not chat.smart_mode
     await session.commit()
@@ -617,7 +617,7 @@ async def list_chats_command(message: Message, session: AsyncSession):
     """List all chats with their settings."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     await process_list_chats(message, session)
 
 @router.message(Command("summ"))
@@ -698,33 +698,33 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
     
     try:
         # Разделяем по _ вместо |
-        _, _, chat_id, period_type = callback.data.split("_")
-        chat = await session.get(Chat, chat_id)
-        
-        if not chat:
+    _, _, chat_id, period_type = callback.data.split("_")
+    chat = await session.get(Chat, chat_id)
+    
+    if not chat:
             await callback.message.edit_text("❌ Чат не найден")
-            return
-
+        return
+    
         # Определяем временной диапазон
         now = datetime.now(timezone.utc)
-        if period_type == "last":
-            # Use last summary timestamp if available, otherwise use 24h
-            start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
+    if period_type == "last":
+        # Use last summary timestamp if available, otherwise use 24h
+        start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
             if start_time and not start_time.tzinfo:
                 start_time = start_time.replace(tzinfo=timezone.utc)
-        elif period_type == "24h":
-            start_time = now - timedelta(days=1)
-        elif period_type == "custom":
-            # Store chat_id in state for custom hours input
-            await callback.message.edit_text(
+    elif period_type == "24h":
+        start_time = now - timedelta(days=1)
+    elif period_type == "custom":
+        # Store chat_id in state for custom hours input
+        await callback.message.edit_text(
                 "Enter number of hours to summarize:",
-                reply_markup=None
-            )
-            return
+            reply_markup=None
+        )
+        return
         else:
             await callback.message.edit_text("❌ Неверный период")
-            return
-
+        return
+    
         # Получаем сообщения за указанный период
         messages_query = (
             select(DBMessage)
@@ -734,11 +734,11 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         )
         result = await session.execute(messages_query)
         messages = result.scalars().all()
-
-        if not messages:
+    
+    if not messages:
             await callback.message.edit_text(f"❌ Нет сообщений за выбранный период")
-            return
-
+        return
+    
         # Подсчет статистики по словам
         word_counts = Counter()
         emoji_counts = Counter()
@@ -785,7 +785,7 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
             message_times.append(msg.created_at)
 
         # Генерируем контекст для суммаризации
-        context_service = ContextService(session)
+    context_service = ContextService(session)
         context = await context_service.get_context_for_summary(chat.id)
         
         # Форматируем сообщения для суммаризации
@@ -800,8 +800,8 @@ async def generate_summary(callback: CallbackQuery, session: AsyncSession):
         
         # Обновляем timestamp последней суммаризации
         chat.last_summary_timestamp = now.replace(tzinfo=None)  # Convert to naive datetime
-        await session.commit()
-
+    await session.commit()
+    
         # Отправляем суммаризацию
         await callback.message.edit_text(
             f"📊 Суммаризация для {chat.name}:\n\n{context}"
@@ -1008,7 +1008,7 @@ async def refresh_command(message: Message, session: AsyncSession):
     """Refresh style for chat type."""
     if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
         return
-        
+    
     try:
         # Create keyboard with chat type options
         keyboard = [
@@ -1045,7 +1045,7 @@ async def select_refresh_type(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != settings.OWNER_ID:
         await callback.answer("Only the owner can refresh style profiles", show_alert=True)
         return
-    
+        
     try:
         # Get chat type from callback data
         chat_type = callback.data.split("_")[2]
@@ -1475,7 +1475,7 @@ async def process_list_chats(message: Message, session: AsyncSession) -> None:
     if not chats:
         await message.answer("No chats found in database.")
         return
-        
+    
     # Create message with chat settings
     text = "📊 Chat Settings:\n\n"
     for chat in chats:
