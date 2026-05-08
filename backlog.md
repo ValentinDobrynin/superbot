@@ -17,7 +17,7 @@
 
 ### [FEATURE-002] Ежедневный дайджест чатов в 23:50 МСК + команда `/digest`
 
-- **Status:** 🟡 In Progress (часть 1 из 2 — сервис, миграция, команда)
+- **Status:** ✅ Done
 - **Priority:** High
 - **Component:** `src/services/digest_service.py`, `src/database/models.py`,
   `src/database/migrations/versions/20260508_0445_*.py`,
@@ -78,13 +78,43 @@
 - [x] Игнорируются каналы / личные / тихие чаты.
 - [x] `make check` зелёный (45 тестов).
 
-**Acceptance Criteria (Phase 2 — следующий коммит)**
+**Acceptance Criteria (Phase 2)**
 
-- [ ] Background-таск в `main.py` спит до 23:50 МСК и шлёт дайджест.
-- [ ] Catch-up на старте: если сейчас уже после 23:50 и за вчера
-      нет записи в `daily_digests` → отправить.
-- [ ] Graceful cancel в `finally` `main()` (как `stats_task`).
-- [ ] Тесты на расчёт `next_run` для разных «сейчас».
+- [x] Background-таск в `main.py` спит до 23:50 МСК и шлёт дайджест.
+- [x] Catch-up на старте: если самое последнее сработавшее окно 23:50
+      ещё не отражено в `daily_digests` → отправить за тот день.
+- [x] Graceful cancel в `finally` `main()` (рядом с `stats_task`).
+- [x] Тесты на расчёт `seconds_until_next_digest` и `previous_trigger_day`.
+
+**Technical Details (Phase 2)**
+
+- В `src/services/digest_service.py` добавлены:
+  - `seconds_until_next_digest(now_utc)` — секунды до ближайших 23:50
+    в `Europe/Moscow`. Если уже после 23:50 сегодня — до 23:50 завтра.
+  - `previous_trigger_day(now_utc)` — календарный день (МСК), чьи 23:50
+    последними сработали; если сейчас до 23:50 сегодня — это вчера, иначе
+    сегодня.
+  - `_send_with_fresh_session(bot, day)` — открывает свою сессию через
+    `async_session()` и шлёт дайджест с `record=True`.
+  - `run_digest_scheduler(bot)` — корутина для бэкграунд-таска: на старте
+    проверяет, отправлен ли дайджест за `previous_trigger_day()`; если
+    нет — шлёт catch-up. Дальше бесконечный цикл `sleep(...)` до 23:50,
+    при срабатывании шлёт за `today_in_moscow()`. Любая ошибка
+    логируется, цикл не падает (60-секундный backoff).
+- `src/main.py`: `digest_task = asyncio.create_task(run_digest_scheduler(bot))`,
+  `cancel()` в общем `finally` рядом с `stats_task`.
+
+**Семантика дня дайджеста**
+
+Автомат в 23:50 МСК (день D) → саммари **дня D** (00:00 — 23:50 D).
+Команда `/digest` без аргументов → за **вчерашний** полный день.
+Если хочется иначе — менять тривиально (1 строка в
+`run_digest_scheduler` и/или `_parse_digest_arg`).
+
+**Resolution**
+
+- Фича собрана из двух коммитов: phase 1 (сервис + миграция + `/digest`),
+  phase 2 (планировщик в `main.py`). Прод проверяется свежим деплоем.
 
 ---
 

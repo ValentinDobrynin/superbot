@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from .config import settings
 from .handlers import command_handler, message_handler
 from .middleware import DatabaseMiddleware
+from .services.digest_service import run_digest_scheduler
 from .services.notification_service import NotificationService
 from .services.stats_service import StatsService
 
@@ -50,16 +51,19 @@ async def main() -> None:
 
     stats_service = StatsService()
     stats_task = asyncio.create_task(stats_service.start_periodic_update())
+    digest_task = asyncio.create_task(run_digest_scheduler(bot))
 
     logger.info("Starting bot...")
     try:
         await dp.start_polling(bot)
     finally:
-        stats_task.cancel()
-        try:
-            await stats_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001 — игнорируем при выходе
-            pass
+        for task in (stats_task, digest_task):
+            task.cancel()
+        for task in (stats_task, digest_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 — игнорируем при выходе
+                pass
         await bot.session.close()
 
 

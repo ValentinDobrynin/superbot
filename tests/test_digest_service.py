@@ -12,6 +12,8 @@ from src.services.digest_service import (
     DigestService,
     _ChatDigestItem,
     period_for_day,
+    previous_trigger_day,
+    seconds_until_next_digest,
     today_in_moscow,
     yesterday_in_moscow,
 )
@@ -42,6 +44,40 @@ def test_today_in_moscow_handles_utc_morning():
     # 02:00 UTC → 05:00 MSK same day.
     fixed_utc = datetime(2026, 5, 8, 2, 0, tzinfo=timezone.utc)
     assert today_in_moscow(fixed_utc) == date(2026, 5, 8)
+
+
+def test_seconds_until_next_digest_just_before_trigger():
+    # 20:30 UTC = 23:30 MSK → 20 min before 23:50 trigger today.
+    fixed = datetime(2026, 5, 8, 20, 30, tzinfo=timezone.utc)
+    secs = seconds_until_next_digest(fixed)
+    assert 1180 <= secs <= 1220  # ~20 minutes
+
+
+def test_seconds_until_next_digest_just_after_trigger():
+    # 21:00 UTC = 00:00 MSK → 23h 50m until next 23:50 today (same MSK day).
+    # That's 85800 seconds (23*3600 + 50*60).
+    fixed = datetime(2026, 5, 8, 21, 0, tzinfo=timezone.utc)
+    secs = seconds_until_next_digest(fixed)
+    assert 85700 <= secs <= 85900
+
+
+def test_previous_trigger_day_before_2350_returns_yesterday_msk():
+    # 12:00 UTC = 15:00 MSK on May 8 → today's 23:50 has not fired yet,
+    # so the most recent fired trigger was yesterday's (May 7).
+    fixed = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    assert previous_trigger_day(fixed) == date(2026, 5, 7)
+
+
+def test_previous_trigger_day_just_past_2350_msk_returns_today_msk():
+    # 20:55 UTC = 23:55 MSK on May 8 → 23:50 fired 5 min ago for May 8.
+    fixed = datetime(2026, 5, 8, 20, 55, tzinfo=timezone.utc)
+    assert previous_trigger_day(fixed) == date(2026, 5, 8)
+
+
+def test_previous_trigger_day_after_midnight_msk_returns_yesterday_msk():
+    # 21:00 UTC = 00:00 MSK on May 9 → most recent trigger was 23:50 of May 8.
+    fixed = datetime(2026, 5, 8, 21, 0, tzinfo=timezone.utc)
+    assert previous_trigger_day(fixed) == date(2026, 5, 8)
 
 
 # ---------------------------------------------------------------------------
