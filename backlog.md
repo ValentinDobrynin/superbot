@@ -15,6 +15,89 @@
 
 ## 🔴 High Priority
 
+### [BUG-005] Классификация чатов не сохраняется (asyncpg DataError на `chat.updated_at`)
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/handlers/command_handler.py`, `src/database/models.py`,
+  `tests/test_command_handler.py`
+
+**Problem Description**
+
+После релиза `1a06704` (`/glossary` v2) при тапе на любую кнопку
+классификации (`💼 / 👤 / 🤝 / ⏭`) бейдж в листинге не менялся, и
+повторный `/glossary` показывал все 33 чата как `❓ не задан`.
+Render-логи (worker `srv-cvhrontrie7s73e9tve0`, инстанс `…fj6wz`,
+8 мая 16:15 UTC и далее, минимум 30 одинаковых трейсов на каждый
+тап) выдавали:
+
+> `sqlalchemy.exc.DBAPIError: (sqlalchemy.dialects.postgresql.asyncpg.Error)`
+> `<class 'asyncpg.exceptions.DataError'>: invalid input for query argument $2:`
+> `datetime.datetime(2026, 5, 8, 16, 15, …) (can't subtract offset-naive`
+> `and offset-aware datetimes)`
+
+Колонка `chats.updated_at` объявлена как `Column(DateTime, ...)`
+(naive). Хендлеры `glossary_set`, `classification_set` и
+`update_chat_title` присваивали ей `datetime.now(timezone.utc)`
+(aware). asyncpg отклонял binding, транзакция откатывалась, ни
+`classification`, ни даже отрисовка следующей страницы не сохранялись.
+Тесты на хендлеры использовали `AsyncMock` сессию и тип-валидацию
+SQLAlchemy не дёргали, поэтому баг проскочил мимо `make check`.
+
+**Expected Behavior**
+
+- Тап на `💼 / 👤 / 🤝` в `/glossary` мгновенно меняет бейдж в той же
+  странице.
+- Тап `cls|<chat>|<value>` на карточке-предложении классификации
+  (после дайджеста) сохраняет значение и редактирует сообщение.
+- Render-логи чисты от `asyncpg.exceptions.DataError`.
+
+**Technical Details**
+
+- Удалены явные присваивания `chat.updated_at = datetime.now(timezone.utc)`
+  в трёх местах: `update_chat_title` (`src/handlers/command_handler.py`
+  ~110), `glossary_set` (~1929), `classification_set` (~2070).
+- SQLAlchemy сам обновит naive `chat.updated_at` через
+  `onupdate=datetime.utcnow` при flush.
+- Регрессионный assert в `tests/test_command_handler.py`
+  (`test_glossary_set_writes_business`,
+  `test_classification_set_writes_value`):
+  `chat.updated_at is None or chat.updated_at.tzinfo is None`.
+- Полная унификация `chats.created_at/updated_at` и
+  `message_stats.timestamp` на `DateTime(timezone=True)` —
+  отдельная задача, отнесена в `TECH-004` follow-up (см. ниже).
+
+**Acceptance Criteria**
+
+- [x] Render-логи 8 мая после фикса не содержат
+      `asyncpg.exceptions.DataError ... can't subtract`.
+- [x] `/glossary` — тап `💼` мгновенно меняет бейдж на `💼 Бизнес`
+      в той же странице.
+- [x] `/digest` — карточка-предложение классификации после дайджеста
+      сохраняет значение по `cls|...`.
+- [x] Регрессионные тесты падают, если кто-то снова присвоит aware
+      datetime в `chat.updated_at`.
+- [x] `make check` зелёный (101+ тестов).
+
+**Resolution**
+
+Отрезал три явных присваивания tz-aware `datetime` в naive колонку
+`chats.updated_at`. Это были:
+
+1. `update_chat_title` — переименование чата при `/status`/`/summ`.
+2. `glossary_set` — новые inline-кнопки `gs|<chat>|...`.
+3. `classification_set` — карточка-предложение после дайджеста.
+
+В каждом месте оставил комментарий со ссылкой на этот таск, чтобы
+не наступить на грабли снова. Полную миграцию `chats.updated_at`
+на `DateTime(timezone=True)` положил в follow-up `TECH-004`
+(не блокирует пользователя — `onupdate=datetime.utcnow` справляется).
+
+В тесты добавил assert, что `chat.updated_at` после хендлера остаётся
+naive или None — без этого `AsyncMock`-сессия не ловила бы регрессию.
+
+---
+
 ### [FEATURE-010] Дайджест по чатам: классификация + промпты business/private/mixed
 
 - **Status:** ✅ Done

@@ -107,7 +107,9 @@ async def update_chat_title(message: Message, chat_id: UUID, session: AsyncSessi
     new_title = getattr(chat_info, "title", None) or chat.name
     if new_title and chat.name != new_title:
         chat.name = new_title
-        chat.updated_at = datetime.now(timezone.utc)
+        # NB: do NOT assign a tz-aware datetime to chat.updated_at — the column
+        # is DateTime (naive) and asyncpg rejects aware values. SQLAlchemy will
+        # auto-touch updated_at via the model-level ``onupdate=datetime.utcnow``.
         await session.commit()
         logger.info("Updated chat title for %s -> %s", chat.telegram_id, new_title)
 
@@ -1924,7 +1926,9 @@ async def glossary_set(callback: CallbackQuery, session: AsyncSession) -> None:
         await callback.answer("Bad value", show_alert=True)
         return
 
-    chat.updated_at = datetime.now(timezone.utc)
+    # ``chat.updated_at`` is a naive ``DateTime`` column — SQLAlchemy's
+    # ``onupdate=datetime.utcnow`` keeps it fresh; assigning an aware value
+    # crashes asyncpg (BUG-005).
     await session.commit()
 
     body, keyboard, _ = await _glo_render_for(session, only_unset=only_unset, offset=offset)
@@ -2063,7 +2067,8 @@ async def classification_set(callback: CallbackQuery, session: AsyncSession) -> 
         return
 
     chat.classification = value
-    chat.updated_at = datetime.now(timezone.utc)
+    # See BUG-005 — assigning aware datetime to naive Chat.updated_at crashes
+    # asyncpg. SQLAlchemy's ``onupdate=datetime.utcnow`` does it for us.
     await session.commit()
     await callback.answer(f"Сохранил: {_CLASSIFICATION_LABELS[value]}")
     try:

@@ -197,6 +197,8 @@ async def test_classification_set_writes_value(monkeypatch):
     assert chat.classification == "business"
     session.commit.assert_awaited()
     callback.answer.assert_awaited()
+    # Regression for BUG-005 — see test_glossary_set_writes_business.
+    assert chat.updated_at is None or chat.updated_at.tzinfo is None
 
 
 @pytest.mark.asyncio
@@ -386,6 +388,12 @@ async def test_glossary_set_writes_business(monkeypatch):
     assert chat.classification == "business"
     session.commit.assert_awaited()
     callback.message.edit_text.assert_awaited_once()
+    # Regression for BUG-005: ``chat.updated_at`` is a naive ``DateTime``
+    # column. The handler must not assign a tz-aware value (asyncpg rejects
+    # those with a DataError). SQLAlchemy's ``onupdate=datetime.utcnow``
+    # touches the column at flush time, but here in unit tests there's no
+    # flush — so ``updated_at`` should still be ``None``.
+    assert chat.updated_at is None or chat.updated_at.tzinfo is None
 
 
 @pytest.mark.asyncio
