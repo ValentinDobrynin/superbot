@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,12 +47,63 @@ def _format_partner_title(message: Message) -> str:
     return " ".join(parts)
 
 
-async def _get_connection(
-    session: AsyncSession, connection_id: Optional[str]
+def _extract_rights(connection: BusinessConnection) -> tuple[bool, Optional[dict]]:
+    """Return ``(can_reply, rights_json_or_none)`` from a BusinessConnection update."""
+    rights = connection.rights
+    rights_json: Optional[dict] = None
+    if rights is not None:
+        try:
+            rights_json = rights.model_dump(exclude_none=True)
+        except Exception:  # noqa: BLE001 — на случай несовместимой версии aiogram
+            rights_json = None
+    can_reply = bool(getattr(connection, "can_reply", False) or (rights and rights.can_reply))
+    return can_reply, rights_json
+
+
+async def _ensure_connection(
+    bot: Bot,
+    session: AsyncSession,
+    connection_id: Optional[str],
 ) -> Optional[DBBusinessConnection]:
+    """Look up the connection in DB; if missing, hydrate it from Telegram.
+
+    This makes the observer self-healing: even if the original
+    ``business_connection`` update was lost (e.g. delivered to a previous
+    bot instance that didn't have business handlers registered), the next
+    incoming ``business_message`` will trigger a one-shot fetch via
+    ``getBusinessConnection`` and store the row.
+    """
     if not connection_id:
         return None
-    return await session.get(DBBusinessConnection, connection_id)
+
+    conn = await session.get(DBBusinessConnection, connection_id)
+    if conn is not None:
+        return conn
+
+    try:
+        info = await bot.get_business_connection(connection_id)
+    except Exception as exc:  # noqa: BLE001 — TG может ответить чем угодно
+        logger.warning("Failed to hydrate business connection %s: %s", connection_id, exc)
+        return None
+
+    can_reply, rights_json = _extract_rights(info)
+    conn = DBBusinessConnection(
+        id=info.id,
+        user_id=info.user.id if info.user else 0,
+        user_chat_id=info.user_chat_id,
+        is_enabled=bool(info.is_enabled),
+        can_reply=can_reply,
+        rights=rights_json,
+    )
+    session.add(conn)
+    await session.commit()
+    logger.info(
+        "Hydrated business connection from Telegram API: id=%s user_id=%s enabled=%s",
+        info.id,
+        info.user.id if info.user else None,
+        info.is_enabled,
+    )
+    return conn
 
 
 async def _upsert_business_chat(
@@ -105,15 +156,7 @@ async def handle_business_connection(event: BusinessConnection, session: AsyncSe
     if not settings.BUSINESS_OBSERVER_ENABLED:
         return
 
-    rights_json = None
-    rights = event.rights
-    if rights is not None:
-        try:
-            rights_json = rights.model_dump(exclude_none=True)
-        except Exception:  # noqa: BLE001 — старая версия aiogram без model_dump
-            rights_json = None
-
-    can_reply = bool(getattr(event, "can_reply", False) or (rights and rights.can_reply))
+    can_reply, rights_json = _extract_rights(event)
 
     existing = await session.get(DBBusinessConnection, event.id)
     if existing is None:
@@ -167,9 +210,12 @@ async def handle_business_message(message: Message, session: AsyncSession) -> No
         logger.warning("business_message without connection_id: %s", message.message_id)
         return
 
-    connection = await _get_connection(session, connection_id)
+    connection = await _ensure_connection(message.bot, session, connection_id)
     if connection is None:
-        logger.warning("business_message for unknown connection %s — ignoring", connection_id)
+        logger.warning(
+            "business_message for connection %s — couldn't hydrate, ignoring",
+            connection_id,
+        )
         return
     if not connection.is_enabled:
         logger.info("business_message for disabled connection %s — ignoring", connection_id)

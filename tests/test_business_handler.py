@@ -146,6 +146,7 @@ def _make_business_message(
     msg.text = text
     msg.caption = None
     msg.date = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    msg.bot = AsyncMock()  # _ensure_connection may call bot.get_business_connection
     return msg
 
 
@@ -161,12 +162,65 @@ async def test_business_message_ignored_when_paused(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_business_message_ignored_for_unknown_connection(monkeypatch):
+async def test_business_message_hydrates_unknown_connection_from_api(monkeypatch):
     monkeypatch.setattr(settings, "business_paused", False)
     monkeypatch.setattr(settings, "is_shutdown", False)
 
-    session = _make_session(get_returns=None)
-    await handle_business_message(_make_business_message(), session)
+    session = AsyncMock()
+    # First DB lookup — no connection. After hydrate (`session.add(conn)`), the
+    # subsequent flow is similar to the "known connection" test.
+    session.get = AsyncMock(return_value=None)
+    res = MagicMock()
+    res.scalar_one_or_none = MagicMock(return_value=None)  # chat lookup misses
+    session.execute = AsyncMock(return_value=res)
+
+    added: list = []
+
+    def _add(obj):
+        if obj.__class__.__name__ == "Chat":
+            obj.id = "chat-uuid"
+        added.append(obj)
+
+    session.add = MagicMock(side_effect=_add)
+
+    msg = _make_business_message()
+    api_conn = SimpleNamespace(
+        id="conn-1",
+        user=SimpleNamespace(id=123),
+        user_chat_id=999,
+        is_enabled=True,
+        can_reply=False,
+        rights=None,
+    )
+    msg.bot = AsyncMock()
+    msg.bot.get_business_connection = AsyncMock(return_value=api_conn)
+
+    await handle_business_message(msg, session)
+
+    msg.bot.get_business_connection.assert_awaited_once_with("conn-1")
+    # Three rows added: hydrated connection, new chat, new message.
+    assert any(o.__class__.__name__ == "BusinessConnection" for o in added)
+    assert any(o.__class__.__name__ == "Chat" for o in added)
+    assert any(o.__class__.__name__ == "DBMessage" for o in added)
+
+
+@pytest.mark.asyncio
+async def test_business_message_ignored_when_hydration_fails(monkeypatch):
+    monkeypatch.setattr(settings, "business_paused", False)
+    monkeypatch.setattr(settings, "is_shutdown", False)
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=None)
+    res = MagicMock()
+    res.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=res)
+    session.add = MagicMock()
+
+    msg = _make_business_message()
+    msg.bot = AsyncMock()
+    msg.bot.get_business_connection = AsyncMock(side_effect=Exception("forbidden"))
+
+    await handle_business_message(msg, session)
 
     session.add.assert_not_called()
 
@@ -178,7 +232,9 @@ async def test_business_message_ignored_when_connection_disabled(monkeypatch):
 
     conn = SimpleNamespace(is_enabled=False, id="conn-1")
     session = _make_session(get_returns=conn)
-    await handle_business_message(_make_business_message(), session)
+    msg = _make_business_message()
+    msg.bot = AsyncMock()  # _ensure_connection will short-circuit on cache hit
+    await handle_business_message(msg, session)
 
     session.add.assert_not_called()
 
@@ -194,7 +250,7 @@ async def test_business_message_creates_chat_and_saves_message(monkeypatch):
     messages_added: list = []
 
     async def fake_get(model, ident):
-        return conn  # only used for connection lookup
+        return conn  # connection lookup hits cache, no API call
 
     session = AsyncMock()
     session.get = AsyncMock(side_effect=fake_get)
@@ -211,7 +267,9 @@ async def test_business_message_creates_chat_and_saves_message(monkeypatch):
 
     session.add = MagicMock(side_effect=_add)
 
-    await handle_business_message(_make_business_message(), session)
+    msg = _make_business_message()
+    await handle_business_message(msg, session)
+    msg.bot.get_business_connection.assert_not_awaited()
 
     assert len(chats_created) == 1
     new_chat = chats_created[0]
@@ -256,6 +314,7 @@ async def test_business_message_falls_back_to_caption(monkeypatch):
 
     msg = _make_business_message(text=None)
     msg.caption = "from photo"
+    # Cached connection lookup, no API call needed.
 
     await handle_business_message(msg, session)
 
