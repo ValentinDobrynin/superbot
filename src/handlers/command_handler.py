@@ -1493,3 +1493,67 @@ async def view_style_profile(callback: CallbackQuery, session: AsyncSession) -> 
         ]
     )
     await callback.message.edit_text(text, reply_markup=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# /digest — daily chat digest (FEATURE-002)
+# ---------------------------------------------------------------------------
+
+
+def _parse_digest_arg(arg: Optional[str]):
+    """Parse the /digest argument into a calendar date (Europe/Moscow).
+
+    - empty / None → yesterday (the canonical "last full day").
+    - "today"      → today (partial day, 00:00..now).
+    - "YYYY-MM-DD" → that exact day.
+    Returns ``None`` on malformed input.
+    """
+    from datetime import date as _date
+
+    from ..services.digest_service import today_in_moscow, yesterday_in_moscow
+
+    if not arg or not arg.strip():
+        return yesterday_in_moscow()
+    arg = arg.strip().lower()
+    if arg == "today":
+        return today_in_moscow()
+    if arg == "yesterday":
+        return yesterday_in_moscow()
+    try:
+        return _date.fromisoformat(arg)
+    except ValueError:
+        return None
+
+
+@router.message(Command("digest"))
+async def digest_command(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """Send a chat digest to the owner.
+
+    Usage:
+        /digest                 — yesterday (default)
+        /digest today           — today so far
+        /digest 2026-05-08      — explicit date
+    """
+    if not _is_owner_private(message):
+        return
+
+    day = _parse_digest_arg(command.args)
+    if day is None:
+        await message.answer("Не понял дату. Примеры: /digest, /digest today, /digest 2026-05-08")
+        return
+
+    from ..services.digest_service import DigestService
+
+    service = DigestService(session, message.bot)
+    await message.answer(f"⏳ Готовлю дайджест за {day.strftime('%d.%m.%Y')}…")
+    try:
+        sent = await service.send_for_day(day, record=False)
+    except Exception as exc:  # noqa: BLE001 — командой управляет владелец, ему и логи
+        logger.error("Digest failed for %s: %s", day, exc, exc_info=True)
+        await message.answer(f"❌ Ошибка при сборке дайджеста: {exc}")
+        return
+
+    if sent == 0:
+        await message.answer("✅ Тихий день — отправил уведомление.")
+    else:
+        await message.answer(f"✅ Готово: {sent} чат(ов).")

@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -210,6 +211,25 @@ thread_relations = Table(
         "related_thread_id", UUID(as_uuid=True), ForeignKey("message_threads.id"), primary_key=True
     ),
 )
+
+
+class DailyDigest(Base):
+    """One row per calendar day (Europe/Moscow) for FEATURE-002 digests."""
+
+    __tablename__ = "daily_digests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    digest_date = Column(Date, nullable=False, unique=True)
+    sent_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    chat_count = Column(Integer, nullable=False, default=0)
+    message_count = Column(Integer, nullable=False, default=0)
+
+    def __repr__(self) -> str:
+        return f"<DailyDigest(date={self.digest_date}, chats={self.chat_count})>"
 
 
 class MessageStats(Base):

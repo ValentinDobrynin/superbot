@@ -15,6 +15,79 @@
 
 ## 🔴 High Priority
 
+### [FEATURE-002] Ежедневный дайджест чатов в 23:50 МСК + команда `/digest`
+
+- **Status:** 🟡 In Progress (часть 1 из 2 — сервис, миграция, команда)
+- **Priority:** High
+- **Component:** `src/services/digest_service.py`, `src/database/models.py`,
+  `src/database/migrations/versions/20260508_0445_*.py`,
+  `prompts/FEATURE-002_daily_digest.txt`,
+  `src/handlers/command_handler.py`, `src/main.py` (часть 2)
+
+**Problem Description**
+
+Владельцу нужен ежедневный дайджест активности по всем чатам, в которых
+сидит бот: либо автоматически в 23:50 по Москве, либо по команде
+`/digest`. Сейчас в проекте есть `/summ <chat>` для одного чата, но
+нет агрегированной картины «что было сегодня по всем чатам».
+
+**Expected Behavior**
+
+- Команда `/digest` доступна только владельцу в личке:
+  - без аргументов → за вчерашние сутки (00:00–23:59 МСК);
+  - `/digest today` → за сегодня от 00:00 до сейчас (МСК);
+  - `/digest YYYY-MM-DD` → за конкретный день.
+- Каналы и личные чаты автоматически исключаются (только `group` /
+  `supergroup`).
+- Чаты, в которых за день не было сообщений, в дайджест не попадают.
+- Если активных чатов 0 — отправляется уведомление «тихий день».
+- Автомат в 23:50 МСК — в Phase 2 (отдельный коммит).
+
+**Technical Details (Phase 1)**
+
+- Миграция `20260508_0445_b2c4d6e8f0a2`:
+  таблица `daily_digests`(`id`, `digest_date UNIQUE`, `sent_at`,
+  `chat_count`, `message_count`).
+- Модель `DailyDigest` в `src/database/models.py`.
+- Промпт `prompts/FEATURE-002_daily_digest.txt` (gpt-3.5-turbo,
+  temperature 0.4, ru, формат «о чём говорили / что важно / атмосфера»).
+- Сервис `src/services/digest_service.py`:
+  - `period_for_day(day)` → `(start_utc, end_utc)` для МСК-дня;
+  - `yesterday_in_moscow()`, `today_in_moscow()`;
+  - `DigestService.collect(day)` → список `_ChatDigestItem` (только
+    `tg_type IN ('group', 'supergroup')`, только чаты с сообщениями);
+  - `DigestService.send_for_day(day, record=True)`:
+    - `record=True` (планировщик) — идемпотентно, пишет в
+      `daily_digests`, повторный вызов за тот же день вернёт `-1`;
+    - `record=False` (`/digest` руками) — всегда шлёт, не пишет в
+      `daily_digests` (это «владелец играется», не official artefact).
+- Команда `/digest` в `src/handlers/command_handler.py`
+  с парсером аргумента (`yesterday`/`today`/ISO-дата).
+- Тесты `tests/test_digest_service.py`:
+  - корректные UTC-границы для дня по МСК;
+  - `yesterday_in_moscow` и `today_in_moscow` на разные времена UTC;
+  - идемпотентность с `record=True`, force-режим с `record=False`;
+  - тихий день шлёт уведомление и пишет запись;
+  - per-chat саммари формируются и отправляются с заголовком чата.
+
+**Acceptance Criteria (Phase 1)**
+
+- [x] Таблица `daily_digests` существует на проде после миграции.
+- [x] `/digest` без аргументов отправляет дайджест за вчера.
+- [x] `/digest today`, `/digest YYYY-MM-DD` работают.
+- [x] Игнорируются каналы / личные / тихие чаты.
+- [x] `make check` зелёный (45 тестов).
+
+**Acceptance Criteria (Phase 2 — следующий коммит)**
+
+- [ ] Background-таск в `main.py` спит до 23:50 МСК и шлёт дайджест.
+- [ ] Catch-up на старте: если сейчас уже после 23:50 и за вчера
+      нет записи в `daily_digests` → отправить.
+- [ ] Graceful cancel в `finally` `main()` (как `stats_task`).
+- [ ] Тесты на расчёт `next_run` для разных «сейчас».
+
+---
+
 ### [FEATURE-003] Игнорировать Telegram-каналы (только чаты)
 
 - **Status:** ✅ Done
