@@ -28,6 +28,9 @@ class ChatType(enum.Enum):
     MIXED = "mixed"
 
 
+TG_CHAT_TYPES = ("private", "group", "supergroup", "channel")
+
+
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -35,7 +38,8 @@ class Chat(Base):
     telegram_id = Column(BigInteger, nullable=False, unique=True)  # Telegram's chat ID
     name = Column(String, nullable=True)
     description = Column(String, nullable=True)
-    type = Column(String, nullable=False)  # Using string instead of enum
+    type = Column(String, nullable=False)  # internal style enum WORK/FRIENDLY/MIXED
+    tg_type = Column(String(16), nullable=False)  # Telegram-side: group/supergroup/private/channel
     is_silent = Column(Boolean, default=True)
     smart_mode = Column(Boolean, default=False)
     response_probability = Column(Float, default=0.5)

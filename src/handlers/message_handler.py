@@ -23,13 +23,20 @@ async def _get_or_create_chat(
     session: AsyncSession,
     telegram_id: int,
     title: Optional[str],
+    tg_type: str,
 ) -> Chat:
     """Look up a chat by ``telegram_id`` (the only stable identifier) or create it."""
     result = await session.execute(select(Chat).where(Chat.telegram_id == telegram_id))
     chat = result.scalar_one_or_none()
     if chat is not None:
+        dirty = False
         if title and chat.name != title:
             chat.name = title
+            dirty = True
+        if chat.tg_type != tg_type:
+            chat.tg_type = tg_type
+            dirty = True
+        if dirty:
             await session.commit()
         return chat
 
@@ -38,10 +45,16 @@ async def _get_or_create_chat(
         name=title or f"Chat {telegram_id}",
         description=f"Telegram chat {telegram_id}",
         type=ChatType.MIXED.value.upper(),
+        tg_type=tg_type,
     )
     session.add(chat)
     await session.commit()
-    logger.info("Created new chat: telegram_id=%s, name=%s", telegram_id, chat.name)
+    logger.info(
+        "Created new chat: telegram_id=%s, tg_type=%s, name=%s",
+        telegram_id,
+        tg_type,
+        chat.name,
+    )
     return chat
 
 
@@ -54,6 +67,15 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
     if event.new_chat_member.user.id != event.bot.id:
         return
 
+    if event.chat.type == "channel":
+        # Per project requirement: bot only handles chats, never channels.
+        logger.info("Bot was added to channel %s — leaving immediately", event.chat.id)
+        try:
+            await event.bot.leave_chat(event.chat.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to leave channel %s: %s", event.chat.id, exc)
+        return
+
     title = event.chat.title
     try:
         chat_info = await event.bot.get_chat(event.chat.id)
@@ -61,7 +83,12 @@ async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSess
     except Exception as exc:  # noqa: BLE001 — TG может вернуть что угодно
         logger.warning("Could not fetch chat info for %s: %s", event.chat.id, exc)
 
-    await _get_or_create_chat(session=session, telegram_id=event.chat.id, title=title)
+    await _get_or_create_chat(
+        session=session,
+        telegram_id=event.chat.id,
+        title=title,
+        tg_type=event.chat.type,
+    )
 
 
 @router.message(F.text)
@@ -75,11 +102,15 @@ async def handle_message(message: Message, session: AsyncSession) -> None:
         # Управляющие команды владельца приходят в личку и обрабатываются
         # отдельно в command_handler; обычный текст в личке игнорируем.
         return
+    if message.chat.type == "channel":
+        # Channels are out of scope; safety net in case we somehow ended up there.
+        return
 
     chat = await _get_or_create_chat(
         session=session,
         telegram_id=message.chat.id,
         title=message.chat.title,
+        tg_type=message.chat.type,
     )
 
     if chat.is_silent:

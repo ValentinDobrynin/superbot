@@ -15,6 +15,69 @@
 
 ## 🔴 High Priority
 
+### [FEATURE-003] Игнорировать Telegram-каналы (только чаты)
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/handlers/message_handler.py`, `src/database/models.py`, `src/database/migrations/versions/20260508_0440_a1b2c3d4e5f6_*.py`
+
+**Problem Description**
+
+По требованию владельца бот должен жить только в чатах (групповых
+и супер-группах) — каналы игнорировать. Раньше в коде такого
+ограничения не было: бот сохранял запись и в каналах, и в группах
+одинаково. В БД к тому же не хранился Telegram-side тип чата.
+
+**Expected Behavior**
+
+- Если бота добавляют в канал — бот выходит (`leave_chat`) и не
+  создаёт запись в БД.
+- Сообщения, прилетевшие из канала, игнорируются на входе.
+- В БД у каждого чата хранится `tg_type`
+  (`private`/`group`/`supergroup`/`channel`).
+- Стартовое состояние БД — пустое (по запросу владельца «начинаем с
+  чистого листа»).
+
+**Technical Details**
+
+- Новая Alembic-ревизия `20260508_0440_a1b2c3d4e5f6`:
+  - `TRUNCATE` всех data-таблиц `RESTART IDENTITY CASCADE` (одноразовый
+    data-reset, не повторяется при повторном `upgrade head`);
+  - `ALTER TABLE chats ADD COLUMN tg_type VARCHAR(16) NOT NULL`;
+  - `CHECK (tg_type IN ('private','group','supergroup','channel'))`.
+- `src/database/models.py`: добавлено поле `Chat.tg_type` + константа
+  `TG_CHAT_TYPES` для документации.
+- `src/handlers/message_handler.py`:
+  - `_get_or_create_chat(...)` принимает `tg_type` и сохраняет/обновляет;
+  - `handle_chat_member_update`: `event.chat.type == "channel"` →
+    `bot.leave_chat(...)` + ранний return, никаких записей;
+  - `handle_message`: ранний return для `chat.type == "channel"`
+    (страховка на случай, если канал каким-то образом остался).
+- `tests/test_message_handler.py` (новый файл):
+  - канал → `leave_chat` + ничего в БД;
+  - супер-группа → запись с `tg_type='supergroup'`;
+  - сообщение из канала игнорируется;
+  - сообщение из лички игнорируется (поведение неизменно).
+- `tests/test_command_handler.py`: фикстура `_make_chat` обновлена с
+  `tg_type='group'`.
+
+**Acceptance Criteria**
+
+- [x] `chats.tg_type NOT NULL` с CHECK-ограничением.
+- [x] Канал → `leave_chat`, ничего не пишется в БД.
+- [x] Группа/супер-группа → корректно сохраняются с `tg_type`.
+- [x] `make check` зелёный (38 тестов).
+- [x] Миграция применяется на проде (через `alembic upgrade head` в
+      build-команде).
+
+**Resolution**
+
+- Прод запущен с пустой БД. Бот переоткроет чаты сам, когда в них
+  что-то напишут или его пере-пригласят. Каналы автоматически
+  отвергаются.
+
+---
+
 ### [BUG-004] `psycopg2-binary` ошибочно удалён в TECH-003, ломает Alembic в проде
 
 - **Status:** ✅ Done

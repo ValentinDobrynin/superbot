@@ -24,7 +24,7 @@ def _make_message_with_bot(get_chat_return=None, get_chat_side_effect=None):
 
 
 def _make_chat(name="Old Name", telegram_id=42) -> Chat:
-    chat = Chat(name=name, telegram_id=telegram_id, type="MIXED", description="x")
+    chat = Chat(name=name, telegram_id=telegram_id, type="MIXED", tg_type="group", description="x")
     chat.id = uuid4()
     return chat
 
