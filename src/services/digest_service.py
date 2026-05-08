@@ -18,7 +18,7 @@ from typing import List, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -38,6 +38,14 @@ MAX_MESSAGES_PER_CHAT = 200  # cap to keep prompt small and OpenAI cost bounded
 class _ChatDigestItem:
     chat: Chat
     messages: List[DBMessage]
+
+
+def _is_business_private(chat: Chat) -> bool:
+    """A `tg_type='private'` chat is included in the digest only if it is a
+    Telegram Business chat (i.e. has a non-null ``business_connection_id``).
+    The owner-bot DM is not stored as a Chat at all, but this is a safety net.
+    """
+    return chat.tg_type == "private" and bool(chat.business_connection_id)
 
 
 def period_for_day(day: date) -> tuple[datetime, datetime]:
@@ -107,13 +115,27 @@ class DigestService:
     async def collect(self, day: date) -> List[_ChatDigestItem]:
         """Return per-chat groups of messages for the given Moscow day.
 
-        Channels and private chats are filtered out at the SQL level.
+        Includes:
+        - groups and supergroups (the original FEATURE-002 scope);
+        - private chats opened via Telegram Business (FEATURE-004).
+
+        Channels are filtered out. The owner-bot DM is never persisted as a
+        Chat row (commands handler short-circuits it), so `private` rows
+        without ``business_connection_id`` are also not picked up — but we
+        explicitly require ``business_connection_id IS NOT NULL`` as a
+        belt-and-suspenders rule.
+
         Chats without any messages in the period are not included.
         """
         start_utc, end_utc = period_for_day(day)
 
         chats_result = await self.session.execute(
-            select(Chat).where(Chat.tg_type.in_(("group", "supergroup")))
+            select(Chat).where(
+                or_(
+                    Chat.tg_type.in_(("group", "supergroup")),
+                    (Chat.tg_type == "private") & (Chat.business_connection_id.isnot(None)),
+                )
+            )
         )
         chats: Sequence[Chat] = chats_result.scalars().all()
 
@@ -134,6 +156,31 @@ class DigestService:
                 continue
             items.append(_ChatDigestItem(chat=chat, messages=messages))
         return items
+
+    async def _send_block(self, *, items: List[_ChatDigestItem], day: date, header: str) -> None:
+        """Send a section header and one message per chat in ``items``."""
+        await self.bot.send_message(
+            settings.OWNER_ID,
+            f"<b>{header}</b> — {len(items)} шт.",
+            parse_mode="HTML",
+        )
+        for item in items:
+            try:
+                summary = await self._summarize(item, day)
+            except Exception as exc:  # noqa: BLE001 — не валим весь дайджест из-за одного чата
+                logger.error(
+                    "Failed to summarise chat %s: %s",
+                    item.chat.telegram_id,
+                    exc,
+                    exc_info=True,
+                )
+                summary = "(не удалось получить саммари — см. логи)"
+            title = item.chat.name or f"Chat {item.chat.telegram_id}"
+            await self.bot.send_message(
+                settings.OWNER_ID,
+                f"<b>{title}</b>\n{summary}",
+                parse_mode="HTML",
+            )
 
     async def _summarize(self, item: _ChatDigestItem, day: date) -> str:
         prompt = load_prompt("FEATURE-002_daily_digest")
@@ -176,27 +223,20 @@ class DigestService:
                 f"📊 Дайджест за {date_str}\nТихий день — ни в одном чате не было сообщений.",
             )
         else:
+            group_items = [i for i in items if not _is_business_private(i.chat)]
+            private_items = [i for i in items if _is_business_private(i.chat)]
+
             await self.bot.send_message(
                 settings.OWNER_ID,
-                f"📊 Дайджест за {date_str} — {len(items)} чат(ов)",
+                (
+                    f"📊 Дайджест за {date_str} — {len(items)} чат(ов) "
+                    f"(групповых: {len(group_items)}, личных: {len(private_items)})"
+                ),
             )
-            for item in items:
-                try:
-                    summary = await self._summarize(item, day)
-                except Exception as exc:  # noqa: BLE001 — не валим весь дайджест из-за одного чата
-                    logger.error(
-                        "Failed to summarise chat %s: %s",
-                        item.chat.telegram_id,
-                        exc,
-                        exc_info=True,
-                    )
-                    summary = "(не удалось получить саммари — см. логи)"
-                title = item.chat.name or f"Chat {item.chat.telegram_id}"
-                await self.bot.send_message(
-                    settings.OWNER_ID,
-                    f"<b>{title}</b>\n{summary}",
-                    parse_mode="HTML",
-                )
+            if group_items:
+                await self._send_block(items=group_items, day=day, header="📊 Чаты")
+            if private_items:
+                await self._send_block(items=private_items, day=day, header="👤 Личные чаты")
 
         if record:
             entry = DailyDigest(

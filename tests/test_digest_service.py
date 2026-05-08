@@ -143,7 +143,12 @@ async def test_send_for_day_does_not_record_when_record_false():
 
 @pytest.mark.asyncio
 async def test_send_for_day_sends_per_chat_summaries():
-    chat = SimpleNamespace(telegram_id=-100123, name="My Chat")
+    chat = SimpleNamespace(
+        telegram_id=-100123,
+        name="My Chat",
+        tg_type="supergroup",
+        business_connection_id=None,
+    )
     msg = SimpleNamespace(text="hello", user_id=42)
     items = [_ChatDigestItem(chat=chat, messages=[msg])]
 
@@ -158,8 +163,45 @@ async def test_send_for_day_sends_per_chat_summaries():
             n = await svc.send_for_day(date(2026, 5, 8), record=True)
 
     assert n == 1
-    # 2 messages: header + 1 chat summary.
-    assert bot.send_message.await_count == 2
-    chat_msg_args = bot.send_message.await_args_list[1].args
+    # 3 messages now: top header + group block header + 1 chat summary.
+    assert bot.send_message.await_count == 3
+    chat_msg_args = bot.send_message.await_args_list[2].args
     assert "My Chat" in chat_msg_args[1]
     assert "• summary" in chat_msg_args[1]
+
+
+@pytest.mark.asyncio
+async def test_send_for_day_separates_groups_and_business_chats():
+    group_chat = SimpleNamespace(
+        telegram_id=-100,
+        name="Team",
+        tg_type="supergroup",
+        business_connection_id=None,
+    )
+    business_chat = SimpleNamespace(
+        telegram_id=555,
+        name="Иван Петров (@ivan_p)",
+        tg_type="private",
+        business_connection_id="conn-1",
+    )
+    items = [
+        _ChatDigestItem(chat=group_chat, messages=[SimpleNamespace(text="hi", user_id=1)]),
+        _ChatDigestItem(chat=business_chat, messages=[SimpleNamespace(text="ok", user_id=2)]),
+    ]
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_result_returning(scalar=None))
+    session.add = MagicMock()
+    bot = AsyncMock()
+
+    svc = DigestService(session, bot)
+    with patch.object(DigestService, "collect", AsyncMock(return_value=items)):
+        with patch.object(DigestService, "_summarize", AsyncMock(return_value="• summary")):
+            await svc.send_for_day(date(2026, 5, 8), record=False)
+
+    sent_texts = [call.args[1] for call in bot.send_message.await_args_list]
+    # 1 top header + 2 block headers + 2 chat summaries == 5 sends.
+    assert len(sent_texts) == 5
+    assert any("Чаты" in t and "1 шт." in t for t in sent_texts)
+    assert any("Личные чаты" in t and "1 шт." in t for t in sent_texts)
+    assert any("групповых: 1" in t and "личных: 1" in t for t in sent_texts)

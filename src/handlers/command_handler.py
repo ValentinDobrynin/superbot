@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database.models import (
+    BusinessConnection,
     Chat,
     ChatType,
     DBMessage,
@@ -159,7 +160,10 @@ async def help_command(message: Message, session: AsyncSession) -> None:
         "/status - Show bot status and statistics\n"
         "/list_chats - List all chats with settings\n\n"
         "📈 Analytics:\n"
-        "/summ - Generate chat summary\n\n"
+        "/summ - Generate chat summary\n"
+        "/digest [today|yesterday|YYYY-MM-DD] - Daily digest (default: yesterday)\n"
+        "/today - Digest for today so far\n"
+        "/business [on|off] - Telegram Business observer status / toggle\n\n"
         "⚙️ Chat Settings:\n"
         "/setmode - Toggle silent mode in chats (bot reads but doesn't respond)\n"
         "/set_style - Set chat style (work/friendly/mixed)\n"
@@ -1557,3 +1561,98 @@ async def digest_command(message: Message, command: CommandObject, session: Asyn
         await message.answer("✅ Тихий день — отправил уведомление.")
     else:
         await message.answer(f"✅ Готово: {sent} чат(ов).")
+
+
+# ---------------------------------------------------------------------------
+# /today — shortcut: digest for today (FEATURE-006)
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("today"))
+async def today_command(message: Message, session: AsyncSession) -> None:
+    """Send the digest for today (so far). Equivalent to ``/digest today``."""
+    if not _is_owner_private(message):
+        return
+
+    from ..services.digest_service import DigestService, today_in_moscow
+
+    day = today_in_moscow()
+    service = DigestService(session, message.bot)
+    await message.answer(f"⏳ Готовлю дайджест за сегодня ({day.strftime('%d.%m.%Y')})…")
+    try:
+        sent = await service.send_for_day(day, record=False)
+    except Exception as exc:  # noqa: BLE001 — owner-only, ему и логи
+        logger.error("/today digest failed: %s", exc, exc_info=True)
+        await message.answer(f"❌ Ошибка при сборке дайджеста: {exc}")
+        return
+    if sent == 0:
+        await message.answer("✅ Тихий день пока — отправил уведомление.")
+    else:
+        await message.answer(f"✅ Готово: {sent} чат(ов).")
+
+
+# ---------------------------------------------------------------------------
+# /business — Telegram Business observer (FEATURE-004)
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("business"))
+async def business_command(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """Inspect / pause / resume the Business observer.
+
+    Usage:
+        /business              — show status
+        /business off          — locally pause saving (Telegram still streams)
+        /business on           — resume saving
+    """
+    if not _is_owner_private(message):
+        return
+
+    arg = (command.args or "").strip().lower()
+    if arg == "off":
+        settings.business_paused = True
+        await message.answer(
+            "🟡 Business observer на паузе.\n"
+            "Telegram всё ещё шлёт сообщения, но в БД мы их не пишем.\n"
+            "Чтобы полностью отключить — выключи бота в Telegram → "
+            "Settings → Telegram Business → Chatbots."
+        )
+        return
+    if arg == "on":
+        settings.business_paused = False
+        await message.answer("🟢 Business observer включён, сообщения снова сохраняются.")
+        return
+    if arg and arg != "status":
+        await message.answer("Не понял команду. Примеры: /business, /business on, /business off")
+        return
+
+    conn_result = await session.execute(select(BusinessConnection))
+    connections = list(conn_result.scalars().all())
+    enabled = [c for c in connections if c.is_enabled]
+    chat_result = await session.execute(
+        select(Chat).where(
+            Chat.tg_type == "private",
+            Chat.business_connection_id.isnot(None),
+        )
+    )
+    business_chats = list(chat_result.scalars().all())
+
+    paused_line = "🟡 на паузе" if settings.business_paused else "🟢 активен"
+    feature_line = (
+        "🟢 включён в коде" if settings.BUSINESS_OBSERVER_ENABLED else "🔴 выключен в коде"
+    )
+
+    lines = [
+        "🤝 Business observer",
+        f"• Состояние: {paused_line}",
+        f"• Код: {feature_line}",
+        f"• Подключений всего: {len(connections)} (активных: {len(enabled)})",
+        f"• Бизнес-чатов в БД: {len(business_chats)}",
+    ]
+    if business_chats:
+        lines.append("\nЧаты:")
+        for chat in business_chats[:20]:
+            lines.append(f"  • {_format_chat_name(chat)}")
+        if len(business_chats) > 20:
+            lines.append(f"  …и ещё {len(business_chats) - 20}")
+    await message.answer("\n".join(lines))

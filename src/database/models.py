@@ -17,7 +17,7 @@ from sqlalchemy import (
     Table,
     select,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from .base import Base
@@ -41,6 +41,13 @@ class Chat(Base):
     description = Column(String, nullable=True)
     type = Column(String, nullable=False)  # internal style enum WORK/FRIENDLY/MIXED
     tg_type = Column(String(16), nullable=False)  # Telegram-side: group/supergroup/private/channel
+    # Non-null only for private chats opened via Telegram Business Mode (FEATURE-004).
+    # Without it, `tg_type='private'` would be ambiguous (owner-bot DM vs business chat).
+    business_connection_id = Column(
+        String(64),
+        ForeignKey("business_connections.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     is_silent = Column(Boolean, default=True)
     smart_mode = Column(Boolean, default=False)
     response_probability = Column(Float, default=0.5)
@@ -211,6 +218,38 @@ thread_relations = Table(
         "related_thread_id", UUID(as_uuid=True), ForeignKey("message_threads.id"), primary_key=True
     ),
 )
+
+
+class BusinessConnection(Base):
+    """A Telegram Business connection between the bot and the owner (FEATURE-004).
+
+    One row per ``connection_id`` returned by Telegram. We never delete rows —
+    on disconnect we just flip ``is_enabled=False`` so the audit trail stays.
+    """
+
+    __tablename__ = "business_connections"
+
+    id = Column(String(64), primary_key=True)  # Telegram's connection_id
+    user_id = Column(BigInteger, nullable=False)  # owner's Telegram user id
+    user_chat_id = Column(BigInteger, nullable=False)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    can_reply = Column(Boolean, nullable=False, default=False)
+    rights = Column(JSONB, nullable=True)  # full BusinessBotRights snapshot
+    connected_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        state = "enabled" if self.is_enabled else "disabled"
+        return f"<BusinessConnection(id={self.id}, user_id={self.user_id}, {state})>"
 
 
 class DailyDigest(Base):

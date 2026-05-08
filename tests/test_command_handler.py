@@ -93,3 +93,75 @@ def test_format_chat_name_falls_back_to_telegram_id():
 
     chat.name = "Pretty"
     assert _format_chat_name(chat) == "Pretty"
+
+
+# ---------------------------------------------------------------------------
+# /business toggle (FEATURE-004)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_business_command_off_pauses_observer(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import business_command
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+    monkeypatch.setattr(app_settings, "business_paused", False)
+
+    msg = MagicMock()
+    msg.from_user.id = 1
+    msg.chat.type = "private"
+    msg.answer = AsyncMock()
+    command = MagicMock()
+    command.args = "off"
+
+    session = AsyncMock()
+
+    await business_command(msg, command, session)
+
+    assert app_settings.business_paused is True
+    msg.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_business_command_on_resumes_observer(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import business_command
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+    monkeypatch.setattr(app_settings, "business_paused", True)
+
+    msg = MagicMock()
+    msg.from_user.id = 1
+    msg.chat.type = "private"
+    msg.answer = AsyncMock()
+    command = MagicMock()
+    command.args = "on"
+
+    session = AsyncMock()
+    await business_command(msg, command, session)
+
+    assert app_settings.business_paused is False
+    msg.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_business_command_rejects_non_owner(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import business_command
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+    monkeypatch.setattr(app_settings, "business_paused", False)
+
+    msg = MagicMock()
+    msg.from_user.id = 999  # not the owner
+    msg.chat.type = "private"
+    msg.answer = AsyncMock()
+    command = MagicMock()
+    command.args = "off"
+
+    session = AsyncMock()
+    await business_command(msg, command, session)
+
+    assert app_settings.business_paused is False
+    msg.answer.assert_not_awaited()

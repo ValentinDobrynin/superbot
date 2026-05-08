@@ -13,8 +13,9 @@ from aiogram.utils.token import validate_token
 from dotenv import load_dotenv
 
 from .config import settings
-from .handlers import command_handler, message_handler
+from .handlers import business_handler, command_handler, message_handler
 from .middleware import DatabaseMiddleware
+from .services.cleanup_service import run_cleanup_scheduler
 from .services.digest_service import run_digest_scheduler
 from .services.notification_service import NotificationService
 from .services.stats_service import StatsService
@@ -42,9 +43,13 @@ async def main() -> None:
     dp.message.middleware(DatabaseMiddleware())
     dp.callback_query.middleware(DatabaseMiddleware())
     dp.chat_member.middleware(DatabaseMiddleware())
+    # FEATURE-004: Business updates also need a DB session in the handler.
+    dp.business_connection.middleware(DatabaseMiddleware())
+    dp.business_message.middleware(DatabaseMiddleware())
 
     dp.include_router(command_handler.router)
     dp.include_router(message_handler.router)
+    dp.include_router(business_handler.router)
 
     notification_service = NotificationService(bot, settings.OWNER_ID)
     await notification_service.notify_startup()
@@ -52,14 +57,16 @@ async def main() -> None:
     stats_service = StatsService()
     stats_task = asyncio.create_task(stats_service.start_periodic_update())
     digest_task = asyncio.create_task(run_digest_scheduler(bot))
+    cleanup_task = asyncio.create_task(run_cleanup_scheduler())
+    background_tasks = (stats_task, digest_task, cleanup_task)
 
     logger.info("Starting bot...")
     try:
         await dp.start_polling(bot)
     finally:
-        for task in (stats_task, digest_task):
+        for task in background_tasks:
             task.cancel()
-        for task in (stats_task, digest_task):
+        for task in background_tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 — игнорируем при выходе

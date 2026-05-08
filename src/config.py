@@ -32,8 +32,19 @@ class Settings(BaseSettings):
     # Chat types
     CHAT_TYPES: List[str] = ["work", "friendly", "mixed"]
 
+    # FEATURE-004: Telegram Business mode (observer-only). Bot doesn't reply
+    # in business chats — it only persists messages for the daily digest.
+    BUSINESS_OBSERVER_ENABLED: bool = True
+    # TECH-009: hard TTL for `messages.text`. Anything older than this is
+    # purged daily by `CleanupService`. 30 days = balance between digest
+    # usefulness and personal-data retention.
+    MESSAGE_TTL_DAYS: int = int(os.getenv("MESSAGE_TTL_DAYS", "30"))
+
     # Global state
     is_shutdown: bool = False
+    # Local pause toggle for business observer (commands `/business on|off`).
+    # When True, business_message updates are received but NOT saved.
+    business_paused: bool = False
 
     model_config = {"env_file": ".env"}
 
