@@ -34,7 +34,9 @@ from ..database.models import (
     BusinessConnection,
     Chat,
     ChatType,
+    Commitment,
     DBMessage,
+    Event,
     MessageContext,
     MessageThread,
     Style,
@@ -163,6 +165,9 @@ async def help_command(message: Message, session: AsyncSession) -> None:
         "/summ - Generate chat summary\n"
         "/digest [today|yesterday|YYYY-MM-DD] - Daily digest (default: yesterday)\n"
         "/today - Digest for today so far\n"
+        "/glossary - Classify chats (business / private / mixed)\n"
+        "/commits - Open commitments (mark done/cancel)\n"
+        "/events - Upcoming events (mark done/cancel)\n"
         "/business [on|off] - Telegram Business observer status / toggle\n\n"
         "⚙️ Chat Settings:\n"
         "/setmode - Toggle silent mode in chats (bot reads but doesn't respond)\n"
@@ -1656,3 +1661,299 @@ async def business_command(message: Message, command: CommandObject, session: As
         if len(business_chats) > 20:
             lines.append(f"  …и ещё {len(business_chats) - 20}")
     await message.answer("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# /glossary, /commits, /events — FEATURE-007/008/009
+# ---------------------------------------------------------------------------
+
+
+_CLASSIFICATION_LABELS = {
+    "business": "💼 Бизнес",
+    "private": "👤 Личный",
+    "mixed": "🤝 Микс",
+}
+
+
+def _classification_badge(value: Optional[str]) -> str:
+    if not value:
+        return "❓ не задан"
+    return _CLASSIFICATION_LABELS.get(value, value)
+
+
+@router.message(Command("glossary"))
+async def glossary_command(message: Message, session: AsyncSession) -> None:
+    """List all Business private chats with their classification + buttons."""
+    if not _is_owner_private(message):
+        return
+
+    result = await session.execute(
+        select(Chat)
+        .where(Chat.tg_type == "private", Chat.business_connection_id.isnot(None))
+        .order_by(Chat.name)
+    )
+    chats = list(result.scalars().all())
+    if not chats:
+        await message.answer("Пока нет личных бизнес-чатов в БД.")
+        return
+
+    lines = ["🗂 Глоссарий чатов\n"]
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for chat in chats:
+        label = _classification_badge(chat.classification)
+        lines.append(f"• {_format_chat_name(chat)} — {label}")
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=f"⚙️ {_format_chat_name(chat)}",
+                    callback_data=f"glo|{chat.id}",
+                )
+            ]
+        )
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+
+
+@router.callback_query(F.data.startswith("glo|"))
+async def glossary_pick_chat(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    body = (
+        f"⚙️ Чат: {_format_chat_name(chat)}\n"
+        f"Сейчас: {_classification_badge(chat.classification)}\n"
+        "Выбери новую классификацию:"
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💼 Бизнес", callback_data=f"cls|{chat.id}|business"),
+                InlineKeyboardButton(text="👤 Личный", callback_data=f"cls|{chat.id}|private"),
+                InlineKeyboardButton(text="🤝 Микс", callback_data=f"cls|{chat.id}|mixed"),
+            ],
+            [
+                InlineKeyboardButton(text="🧹 Сбросить", callback_data=f"cls|{chat.id}|clear"),
+                InlineKeyboardButton(text="⏭ Позже", callback_data=f"cls|{chat.id}|skip"),
+            ],
+        ]
+    )
+    await callback.message.edit_text(body, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cls|"))
+async def classification_set(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Apply a classification to a chat (used by glossary AND digest suggestions)."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, chat_id, value = callback.data.split("|", 2)
+    except ValueError:
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    if value == "skip":
+        await callback.answer("Окей, спрошу позже.")
+        return
+
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    if value == "clear":
+        chat.classification = None
+        await session.commit()
+        await callback.answer("Сбросил классификацию.")
+        try:
+            await callback.message.edit_text(
+                f"🧹 {_format_chat_name(chat)} — классификация сброшена."
+            )
+        except TelegramForbiddenError:  # pragma: no cover — race with deleted message
+            pass
+        return
+
+    if value not in ("business", "private", "mixed"):
+        await callback.answer("Bad value", show_alert=True)
+        return
+
+    chat.classification = value
+    chat.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await callback.answer(f"Сохранил: {_CLASSIFICATION_LABELS[value]}")
+    try:
+        await callback.message.edit_text(
+            f"✅ {_format_chat_name(chat)} → {_CLASSIFICATION_LABELS[value]}"
+        )
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+
+
+def _commit_short(text: str, *, max_len: int = 60) -> str:
+    text = text.strip().replace("\n", " ")
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+@router.message(Command("commits"))
+async def commits_command(message: Message, session: AsyncSession) -> None:
+    """List all open commitments across chats with done/cancel buttons."""
+    if not _is_owner_private(message):
+        return
+
+    result = await session.execute(
+        select(Commitment, Chat)
+        .join(Chat, Chat.id == Commitment.chat_id)
+        .where(Commitment.status == "open")
+        .order_by(Commitment.is_urgent.desc(), Commitment.deadline_at.asc().nullslast())
+    )
+    rows = list(result.all())
+    if not rows:
+        await message.answer("✅ Открытых коммитов нет.")
+        return
+
+    await message.answer(f"🤝 Открытых коммитов: {len(rows)}")
+    for commitment, chat in rows:
+        direction = "→ от меня" if commitment.direction == "from_me" else "← мне"
+        urgent = "⚠️ " if commitment.is_urgent else ""
+        deadline = f" ({commitment.deadline_raw})" if commitment.deadline_raw else ""
+        body = (
+            f"{urgent}{direction} в чате «{_format_chat_name(chat)}»\n"
+            f"{_commit_short(commitment.text)}{deadline}"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Сделано", callback_data=f"commit|{commitment.id}|done"
+                    ),
+                    InlineKeyboardButton(
+                        text="🗑 Отменить", callback_data=f"commit|{commitment.id}|cancel"
+                    ),
+                ]
+            ]
+        )
+        await message.answer(body, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("commit|"))
+async def commit_action(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, raw_id, action = callback.data.split("|", 2)
+        commit_id = UUID(raw_id)
+    except (ValueError, IndexError):
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    if action not in ("done", "cancel"):
+        await callback.answer("Bad action", show_alert=True)
+        return
+
+    commitment = await session.get(Commitment, commit_id)
+    if commitment is None:
+        await callback.answer("Не нашёл коммит — возможно, уже удалён.", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    commitment.status = "done" if action == "done" else "cancelled"
+    commitment.updated_at = now
+    commitment.completed_at = now
+    await session.commit()
+
+    label = "✅ Сделано" if action == "done" else "🗑 Отменено"
+    try:
+        original = callback.message.text or ""
+        await callback.message.edit_text(f"{label}\n\n{original}", reply_markup=None)
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+    await callback.answer(label)
+
+
+@router.message(Command("events"))
+async def events_command(message: Message, session: AsyncSession) -> None:
+    """List all upcoming events across chats with done/cancel buttons."""
+    if not _is_owner_private(message):
+        return
+
+    result = await session.execute(
+        select(Event, Chat)
+        .join(Chat, Chat.id == Event.chat_id)
+        .where(Event.status == "upcoming")
+        .order_by(Event.is_urgent.desc(), Event.when_at.asc().nullslast())
+    )
+    rows = list(result.all())
+    if not rows:
+        await message.answer("📅 Запланированных событий нет.")
+        return
+
+    await message.answer(f"📅 Запланированных событий: {len(rows)}")
+    for event, chat in rows:
+        urgent = "⚠️ " if event.is_urgent else ""
+        when = f" — {event.when_raw}" if event.when_raw else ""
+        body = (
+            f"{urgent}В чате «{_format_chat_name(chat)}»\n"
+            f"{_commit_short(event.description)}{when}"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Прошло", callback_data=f"event|{event.id}|done"),
+                    InlineKeyboardButton(
+                        text="🗑 Отменить", callback_data=f"event|{event.id}|cancel"
+                    ),
+                ]
+            ]
+        )
+        await message.answer(body, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("event|"))
+async def event_action(callback: CallbackQuery, session: AsyncSession) -> None:
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, raw_id, action = callback.data.split("|", 2)
+        event_id = UUID(raw_id)
+    except (ValueError, IndexError):
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    if action not in ("done", "cancel"):
+        await callback.answer("Bad action", show_alert=True)
+        return
+
+    event = await session.get(Event, event_id)
+    if event is None:
+        await callback.answer("Не нашёл событие — возможно, уже удалено.", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    event.status = "past" if action == "done" else "cancelled"
+    event.updated_at = now
+    await session.commit()
+
+    label = "✅ Прошло" if action == "done" else "🗑 Отменено"
+    try:
+        original = callback.message.text or ""
+        await callback.message.edit_text(f"{label}\n\n{original}", reply_markup=None)
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+    await callback.answer(label)

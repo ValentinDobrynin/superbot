@@ -165,3 +165,118 @@ async def test_business_command_rejects_non_owner(monkeypatch):
 
     assert app_settings.business_paused is False
     msg.answer.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# /glossary, /commits, /events callbacks (FEATURE-007/008/009)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_classification_set_writes_value(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import classification_set
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    chat = _make_chat(name="Маша", telegram_id=42)
+    chat.classification = None
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=chat)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"cls|{chat.id}|business"
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await classification_set(callback, session)
+
+    assert chat.classification == "business"
+    session.commit.assert_awaited()
+    callback.answer.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_classification_set_skip_does_not_write(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import classification_set
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    chat = _make_chat()
+    chat.classification = None
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=chat)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"cls|{chat.id}|skip"
+    callback.message = MagicMock()
+    callback.answer = AsyncMock()
+
+    await classification_set(callback, session)
+
+    assert chat.classification is None
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_commit_action_marks_done(monkeypatch):
+    from src.config import settings as app_settings
+    from src.database.models import Commitment
+    from src.handlers.command_handler import commit_action
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    commitment = Commitment(
+        chat_id=uuid4(), direction="from_me", text="отправлю отчёт", status="open"
+    )
+    commitment.id = uuid4()
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=commitment)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"commit|{commitment.id}|done"
+    callback.message = MagicMock()
+    callback.message.text = "irrelevant"
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await commit_action(callback, session)
+
+    assert commitment.status == "done"
+    assert commitment.completed_at is not None
+    session.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_event_action_marks_cancelled(monkeypatch):
+    from src.config import settings as app_settings
+    from src.database.models import Event
+    from src.handlers.command_handler import event_action
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    event = Event(chat_id=uuid4(), description="ужин", status="upcoming")
+    event.id = uuid4()
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=event)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"event|{event.id}|cancel"
+    callback.message = MagicMock()
+    callback.message.text = "irrelevant"
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await event_action(callback, session)
+
+    assert event.status == "cancelled"
+    session.commit.assert_awaited()

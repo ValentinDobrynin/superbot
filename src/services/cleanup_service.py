@@ -15,11 +15,11 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..database.models import DBMessage
+from ..database.models import DBMessage, Event
 
 logger = logging.getLogger(__name__)
 
@@ -54,30 +54,55 @@ class CleanupService:
         await self.session.commit()
         return int(result.rowcount or 0)
 
+    async def mark_past_events(self, *, now_utc: Optional[datetime] = None) -> int:
+        """Auto-flip ``events.status`` from ``upcoming`` to ``past`` once
+        ``when_at`` has elapsed (FEATURE-009).
 
-async def _purge_with_fresh_session() -> int:
+        Events without a parsed ``when_at`` are left alone — there's nothing
+        objective to compare against, and we don't want to spuriously hide
+        something whose deadline string we just couldn't parse.
+        """
+        cutoff = now_utc or datetime.now(timezone.utc)
+        result = await self.session.execute(
+            update(Event)
+            .where(
+                Event.status == "upcoming",
+                Event.when_at.isnot(None),
+                Event.when_at < cutoff,
+            )
+            .values(status="past", updated_at=cutoff)
+        )
+        await self.session.commit()
+        return int(result.rowcount or 0)
+
+
+async def _run_cleanup_pass() -> tuple[int, int]:
     from ..database.database import async_session  # local: avoid import cycle
 
     async with async_session() as session:
-        return await CleanupService(session).purge_old_messages()
+        service = CleanupService(session)
+        purged = await service.purge_old_messages()
+        marked = await service.mark_past_events()
+    return purged, marked
 
 
 async def run_cleanup_scheduler() -> None:
-    """Background loop: every day at 04:00 MSK, purge messages older than TTL."""
+    """Background loop: every day at 04:00 MSK run a cleanup pass."""
     while True:
         try:
             sleep_for = seconds_until_next_cleanup()
-            logger.info("Message TTL cleanup: sleeping %.0f s until next 04:00 MSK", sleep_for)
+            logger.info("Cleanup: sleeping %.0f s until next 04:00 MSK", sleep_for)
             await asyncio.sleep(sleep_for)
-            deleted = await _purge_with_fresh_session()
+            purged, marked = await _run_cleanup_pass()
             logger.info(
-                "Message TTL cleanup: purged %s rows older than %s days",
-                deleted,
+                "Cleanup pass done: purged %s old messages (TTL=%s d), marked %s events as past",
+                purged,
                 settings.MESSAGE_TTL_DAYS,
+                marked,
             )
         except asyncio.CancelledError:
             logger.info("Cleanup scheduler cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 — никогда не валим бота из-за чистки
-            logger.error("Message TTL cleanup failed: %s", exc, exc_info=True)
+            logger.error("Cleanup pass failed: %s", exc, exc_info=True)
             await asyncio.sleep(60)

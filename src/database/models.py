@@ -30,6 +30,10 @@ class ChatType(enum.Enum):
 
 
 TG_CHAT_TYPES = ("private", "group", "supergroup", "channel")
+CLASSIFICATIONS = ("business", "private", "mixed")
+COMMIT_DIRECTIONS = ("from_me", "to_me")
+COMMIT_STATUSES = ("open", "done", "cancelled")
+EVENT_STATUSES = ("upcoming", "past", "cancelled")
 
 
 class Chat(Base):
@@ -48,6 +52,9 @@ class Chat(Base):
         ForeignKey("business_connections.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # FEATURE-007: owner-confirmed bucket. NULL = unclassified (default for new
+    # chats; the next digest will surface a classification suggestion).
+    classification = Column(String(16), nullable=True)
     is_silent = Column(Boolean, default=True)
     smart_mode = Column(Boolean, default=False)
     response_probability = Column(Float, default=0.5)
@@ -269,6 +276,78 @@ class DailyDigest(Base):
 
     def __repr__(self) -> str:
         return f"<DailyDigest(date={self.digest_date}, chats={self.chat_count})>"
+
+
+class Commitment(Base):
+    """A commitment extracted from a chat (FEATURE-008).
+
+    Persisted across digests so we can dedupe and let the owner mark it
+    done/cancelled. ``direction`` specifies who promised whom:
+    - ``from_me`` — owner committed something to the partner;
+    - ``to_me`` — partner committed something to the owner.
+    """
+
+    __tablename__ = "commitments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
+    direction = Column(String(8), nullable=False)  # 'from_me' / 'to_me'
+    text = Column(String, nullable=False)
+    deadline_raw = Column(String, nullable=True)  # raw NL string from the chat
+    deadline_at = Column(DateTime(timezone=True), nullable=True)  # parsed datetime
+    is_urgent = Column(Boolean, nullable=False, default=False)
+    status = Column(String(16), nullable=False, default="open")
+    source_message_id = Column(Integer, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    chat = relationship("Chat")
+
+    def __repr__(self) -> str:
+        return f"<Commitment({self.direction}, status={self.status}, text={self.text[:30]!r})>"
+
+
+class Event(Base):
+    """A date / event extracted from a chat (FEATURE-009)."""
+
+    __tablename__ = "events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
+    description = Column(String, nullable=False)
+    when_raw = Column(String, nullable=True)
+    when_at = Column(DateTime(timezone=True), nullable=True)
+    is_urgent = Column(Boolean, nullable=False, default=False)
+    status = Column(String(16), nullable=False, default="upcoming")
+    source_message_id = Column(Integer, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    chat = relationship("Chat")
+
+    def __repr__(self) -> str:
+        return (
+            f"<Event(status={self.status}, when={self.when_raw!r}, desc={self.description[:30]!r})>"
+        )
 
 
 class MessageStats(Base):

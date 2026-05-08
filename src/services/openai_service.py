@@ -35,6 +35,7 @@ class OpenAIService:
         rendered: str,
         *,
         system: str,
+        json_mode: bool = False,
     ) -> str:
         kwargs: Dict[str, object] = {
             "model": prompt.model,
@@ -46,9 +47,34 @@ class OpenAIService:
         }
         if prompt.max_tokens is not None:
             kwargs["max_tokens"] = prompt.max_tokens
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
 
         response = await client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()
+
+    @staticmethod
+    async def complete_json(
+        prompt: PromptSpec,
+        rendered: str,
+        *,
+        system: str = "You output strict JSON. No markdown, no preamble.",
+    ) -> dict:
+        """Run a prompt in OpenAI JSON mode and return the parsed object.
+
+        Falls back to permissive parsing (locating the first ``{`` and the
+        last ``}``) if the model still wraps the JSON in prose for some
+        reason.
+        """
+        text = await OpenAIService._complete(prompt, rendered, system=system, json_mode=True)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(text[start : end + 1])
+            raise
 
     @staticmethod
     async def get_style_for_chat_type(session: AsyncSession, chat_type: ChatType) -> str:

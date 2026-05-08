@@ -72,3 +72,25 @@ async def test_purge_old_messages_clamps_ttl_to_at_least_one_day(monkeypatch):
     cutoff_value = next(iter(bound.values()))
     # The clamp ensures 0 → 1 day (we never want to drop everything).
     assert cutoff_value == fixed - timedelta(days=1)
+
+
+@pytest.mark.asyncio
+async def test_mark_past_events_emits_update_against_events_table():
+    session = AsyncMock()
+    result = MagicMock()
+    result.rowcount = 3
+    session.execute = AsyncMock(return_value=result)
+
+    svc = CleanupService(session)
+    fixed = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    marked = await svc.mark_past_events(now_utc=fixed)
+
+    assert marked == 3
+    session.commit.assert_awaited()
+
+    stmt = session.execute.call_args.args[0]
+    sql = str(stmt).lower()
+    assert "update" in sql and "events" in sql
+    # The cutoff bound parameter must equal ``fixed`` (status='upcoming' AND when_at < cutoff).
+    bound = stmt.compile().params  # type: ignore[attr-defined]
+    assert fixed in bound.values()

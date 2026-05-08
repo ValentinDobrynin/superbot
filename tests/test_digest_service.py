@@ -1,8 +1,8 @@
-"""Tests for DigestService (FEATURE-002)."""
+"""Tests for DigestService (FEATURE-002 + FEATURE-007/008/009/010)."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +11,10 @@ import pytest
 from src.services.digest_service import (
     DigestService,
     _ChatDigestItem,
+    _format_messages,
+    _partner_label_for,
+    is_within_24h,
+    parse_deadline,
     period_for_day,
     previous_trigger_day,
     seconds_until_next_digest,
@@ -29,55 +33,130 @@ def test_period_for_day_covers_full_moscow_day_in_utc():
 
     assert start.tzinfo == timezone.utc
     assert end.tzinfo == timezone.utc
-    # Moscow is UTC+3 → 00:00 MSK == 21:00 UTC of the previous day.
     assert start == datetime(2026, 5, 7, 21, 0, tzinfo=timezone.utc)
     assert end == datetime(2026, 5, 8, 21, 0, tzinfo=timezone.utc)
 
 
 def test_yesterday_in_moscow_handles_utc_late_night():
-    # 23:00 UTC on May 8 → 02:00 MSK on May 9 → yesterday MSK = May 8.
     fixed_utc = datetime(2026, 5, 8, 23, 0, tzinfo=timezone.utc)
     assert yesterday_in_moscow(fixed_utc) == date(2026, 5, 8)
 
 
 def test_today_in_moscow_handles_utc_morning():
-    # 02:00 UTC → 05:00 MSK same day.
     fixed_utc = datetime(2026, 5, 8, 2, 0, tzinfo=timezone.utc)
     assert today_in_moscow(fixed_utc) == date(2026, 5, 8)
 
 
 def test_seconds_until_next_digest_just_before_trigger():
-    # 20:30 UTC = 23:30 MSK → 20 min before 23:50 trigger today.
     fixed = datetime(2026, 5, 8, 20, 30, tzinfo=timezone.utc)
     secs = seconds_until_next_digest(fixed)
-    assert 1180 <= secs <= 1220  # ~20 minutes
+    assert 1180 <= secs <= 1220
 
 
 def test_seconds_until_next_digest_just_after_trigger():
-    # 21:00 UTC = 00:00 MSK → 23h 50m until next 23:50 today (same MSK day).
-    # That's 85800 seconds (23*3600 + 50*60).
     fixed = datetime(2026, 5, 8, 21, 0, tzinfo=timezone.utc)
     secs = seconds_until_next_digest(fixed)
     assert 85700 <= secs <= 85900
 
 
 def test_previous_trigger_day_before_2350_returns_yesterday_msk():
-    # 12:00 UTC = 15:00 MSK on May 8 → today's 23:50 has not fired yet,
-    # so the most recent fired trigger was yesterday's (May 7).
     fixed = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
     assert previous_trigger_day(fixed) == date(2026, 5, 7)
 
 
 def test_previous_trigger_day_just_past_2350_msk_returns_today_msk():
-    # 20:55 UTC = 23:55 MSK on May 8 → 23:50 fired 5 min ago for May 8.
     fixed = datetime(2026, 5, 8, 20, 55, tzinfo=timezone.utc)
     assert previous_trigger_day(fixed) == date(2026, 5, 8)
 
 
 def test_previous_trigger_day_after_midnight_msk_returns_yesterday_msk():
-    # 21:00 UTC = 00:00 MSK on May 9 → most recent trigger was 23:50 of May 8.
     fixed = datetime(2026, 5, 8, 21, 0, tzinfo=timezone.utc)
     assert previous_trigger_day(fixed) == date(2026, 5, 8)
+
+
+# ---------------------------------------------------------------------------
+# Deadline parsing & urgency
+# ---------------------------------------------------------------------------
+
+
+def test_parse_deadline_returns_none_for_empty():
+    assert parse_deadline("") is None
+    assert parse_deadline(None) is None
+
+
+def test_parse_deadline_handles_iso_date():
+    parsed = parse_deadline("2026-05-15")
+    assert parsed is not None
+    assert parsed.tzinfo is not None
+    # Date alone → midnight Moscow → 21:00 UTC of the previous day.
+    assert parsed.date() in (date(2026, 5, 14), date(2026, 5, 15))
+
+
+def test_is_within_24h_true_for_near_future():
+    now = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    soon = now + timedelta(hours=10)
+    assert is_within_24h(soon, now_utc=now) is True
+
+
+def test_is_within_24h_false_for_far_future():
+    now = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    later = now + timedelta(days=3)
+    assert is_within_24h(later, now_utc=now) is False
+
+
+def test_is_within_24h_false_for_past():
+    now = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+    earlier = now - timedelta(hours=1)
+    assert is_within_24h(earlier, now_utc=now) is False
+
+
+def test_is_within_24h_handles_none():
+    assert is_within_24h(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Author normalisation in messages
+# ---------------------------------------------------------------------------
+
+
+def test_format_messages_owner_is_normalised_to_ya():
+    msgs = [
+        SimpleNamespace(text="привет", user_id=42),
+        SimpleNamespace(text="как дела?", user_id=999),
+    ]
+    out = _format_messages(msgs, owner_id=42, partner_label="Маша", is_group=False)
+    assert "Я: привет" in out
+    assert "Маша: как дела?" in out
+
+
+def test_format_messages_group_uses_anonymous_short_label():
+    msgs = [
+        SimpleNamespace(text="hi", user_id=42),
+        SimpleNamespace(text="hello", user_id=12345),
+    ]
+    out = _format_messages(msgs, owner_id=42, partner_label="ignored", is_group=True)
+    assert "Я: hi" in out
+    assert "user_12345: hello" in out
+
+
+def test_format_messages_skips_empty_text():
+    msgs = [
+        SimpleNamespace(text="", user_id=42),
+        SimpleNamespace(text=None, user_id=42),
+        SimpleNamespace(text="real", user_id=42),
+    ]
+    out = _format_messages(msgs, owner_id=42, partner_label="x", is_group=False)
+    assert out == "Я: real"
+
+
+def test_partner_label_strips_username_and_keeps_first_name():
+    chat = SimpleNamespace(name="Мария Иванова (@maria_iv)", telegram_id=12345)
+    assert _partner_label_for(chat) == "Мария"
+
+
+def test_partner_label_falls_back_to_telegram_id_when_name_missing():
+    chat = SimpleNamespace(name=None, telegram_id=99)
+    assert _partner_label_for(chat) == "Контакт_99"
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +165,6 @@ def test_previous_trigger_day_after_midnight_msk_returns_yesterday_msk():
 
 
 def _result_returning(scalar):
-    """Tiny stub for `await session.execute(...)`."""
     res = MagicMock()
     res.scalar_one_or_none = MagicMock(return_value=scalar)
     res.scalars = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
@@ -137,17 +215,20 @@ async def test_send_for_day_does_not_record_when_record_false():
     with patch.object(DigestService, "collect", AsyncMock(return_value=[])):
         await svc.send_for_day(date(2026, 5, 8), record=False)
 
-    bot.send_message.assert_awaited()  # still sent
-    session.add.assert_not_called()  # but NOT recorded
+    bot.send_message.assert_awaited()
+    session.add.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_send_for_day_sends_per_chat_summaries():
+async def test_send_for_day_processes_each_chat():
+    """One header + one message per chat (+ no classification suggestions when classified)."""
     chat = SimpleNamespace(
+        id="chat-uuid",
         telegram_id=-100123,
         name="My Chat",
         tg_type="supergroup",
         business_connection_id=None,
+        classification="business",
     )
     msg = SimpleNamespace(text="hello", user_id=42)
     items = [_ChatDigestItem(chat=chat, messages=[msg])]
@@ -159,49 +240,133 @@ async def test_send_for_day_sends_per_chat_summaries():
 
     svc = DigestService(session, bot)
     with patch.object(DigestService, "collect", AsyncMock(return_value=items)):
-        with patch.object(DigestService, "_summarize", AsyncMock(return_value="• summary")):
-            n = await svc.send_for_day(date(2026, 5, 8), record=True)
+        with patch.object(
+            DigestService,
+            "_extract",
+            AsyncMock(return_value={"summary_md": "Sample.", "commitments": []}),
+        ):
+            with patch.object(DigestService, "_persist", AsyncMock()):
+                n = await svc.send_for_day(date(2026, 5, 8), record=True)
 
     assert n == 1
-    # 3 messages now: top header + group block header + 1 chat summary.
-    assert bot.send_message.await_count == 3
-    chat_msg_args = bot.send_message.await_args_list[2].args
-    assert "My Chat" in chat_msg_args[1]
-    assert "• summary" in chat_msg_args[1]
+    # Header + one chat block.
+    assert bot.send_message.await_count == 2
+    second_call = bot.send_message.await_args_list[1]
+    assert "My Chat" in second_call.args[1]
 
 
-@pytest.mark.asyncio
-async def test_send_for_day_separates_groups_and_business_chats():
-    group_chat = SimpleNamespace(
-        telegram_id=-100,
-        name="Team",
-        tg_type="supergroup",
-        business_connection_id=None,
-    )
-    business_chat = SimpleNamespace(
-        telegram_id=555,
-        name="Иван Петров (@ivan_p)",
+# ---------------------------------------------------------------------------
+# Render block — MarkdownV2 output structure
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _render_chat():
+    return SimpleNamespace(
+        id="abc",
+        telegram_id=12345,
+        name="Маша",
         tg_type="private",
         business_connection_id="conn-1",
+        classification="private",
     )
-    items = [
-        _ChatDigestItem(chat=group_chat, messages=[SimpleNamespace(text="hi", user_id=1)]),
-        _ChatDigestItem(chat=business_chat, messages=[SimpleNamespace(text="ok", user_id=2)]),
-    ]
 
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_returning(scalar=None))
-    session.add = MagicMock()
-    bot = AsyncMock()
 
-    svc = DigestService(session, bot)
-    with patch.object(DigestService, "collect", AsyncMock(return_value=items)):
-        with patch.object(DigestService, "_summarize", AsyncMock(return_value="• summary")):
-            await svc.send_for_day(date(2026, 5, 8), record=False)
+def _new_svc() -> DigestService:
+    return DigestService(MagicMock(), MagicMock())
 
-    sent_texts = [call.args[1] for call in bot.send_message.await_args_list]
-    # 1 top header + 2 block headers + 2 chat summaries == 5 sends.
-    assert len(sent_texts) == 5
-    assert any("Чаты" in t and "1 шт." in t for t in sent_texts)
-    assert any("Личные чаты" in t and "1 шт." in t for t in sent_texts)
-    assert any("групповых: 1" in t and "личных: 1" in t for t in sent_texts)
+
+def test_render_block_full_payload(_render_chat):
+    item = _ChatDigestItem(
+        chat=_render_chat,
+        messages=[
+            SimpleNamespace(text="hi", user_id=1),
+            SimpleNamespace(text="привет", user_id=2),
+        ],
+    )
+    extracted = {
+        "summary_md": "Сегодня обсудили проект.",
+        "commitments": [
+            {
+                "direction": "from_me",
+                "text": "отправлю отчёт",
+                "deadline_raw": "до пятницы",
+                "is_urgent": True,
+            },
+            {
+                "direction": "to_me",
+                "text": "позвонит",
+                "deadline_raw": None,
+                "is_urgent": False,
+            },
+        ],
+        "events": [
+            {
+                "description": "ужин",
+                "when_raw": "12.05 в 19:00",
+                "is_urgent": False,
+            }
+        ],
+        "open_questions": [
+            {"direction": "to_partner", "text": "когда созвон?"},
+            {"direction": "to_me", "text": "что с фрилансером?"},
+        ],
+    }
+
+    block = _new_svc()._render_block(item, extracted)
+
+    # Header has chat name + message counts.
+    assert "Маша" in block
+    assert "*Коммиты*" in block
+    assert "от меня: отправлю отчёт" in block
+    assert "← мне: позвонит" in block
+    assert "*Даты и события*" in block
+    assert "*Открытые вопросы*" in block
+    assert "*Срочное*" in block
+    # Plain dots are escaped for MarkdownV2.
+    assert "сообщ\\." in block
+
+
+def test_render_block_skips_empty_sections(_render_chat):
+    item = _ChatDigestItem(chat=_render_chat, messages=[SimpleNamespace(text="x", user_id=1)])
+    extracted = {"summary_md": "Тихо.", "commitments": [], "events": [], "open_questions": []}
+
+    block = _new_svc()._render_block(item, extracted)
+
+    assert "Тихо\\." in block
+    assert "Коммиты" not in block
+    assert "Открытые вопросы" not in block
+    assert "Срочное" not in block
+
+
+def test_render_block_uses_classification_badge():
+    chat = SimpleNamespace(
+        id="abc",
+        telegram_id=1,
+        name="Босс",
+        tg_type="private",
+        business_connection_id="c",
+        classification="business",
+    )
+    item = _ChatDigestItem(chat=chat, messages=[SimpleNamespace(text="x", user_id=1)])
+    extracted = {"summary_md": ""}
+
+    block = _new_svc()._render_block(item, extracted)
+
+    assert block.startswith("💼 ")
+
+
+def test_render_block_unclassified_uses_question_badge():
+    chat = SimpleNamespace(
+        id="abc",
+        telegram_id=1,
+        name="Кто-то",
+        tg_type="private",
+        business_connection_id="c",
+        classification=None,
+    )
+    item = _ChatDigestItem(chat=chat, messages=[SimpleNamespace(text="x", user_id=1)])
+
+    block = _new_svc()._render_block(item, {"summary_md": ""})
+
+    assert block.startswith("❓ ")

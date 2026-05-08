@@ -15,6 +15,222 @@
 
 ## 🔴 High Priority
 
+### [FEATURE-010] Дайджест по чатам: классификация + промпты business/private/mixed
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/services/digest_service.py`,
+  `src/services/openai_service.py`, `src/services/md.py`,
+  `prompts/FEATURE-010_classify.txt`,
+  `prompts/FEATURE-010_digest_business.txt`,
+  `prompts/FEATURE-010_digest_private.txt`,
+  `prompts/FEATURE-010_digest_mixed.txt`,
+  `src/database/migrations/versions/20260508_1300_d4e6f8a0c2b4_glossary_commits_events.py`,
+  `src/database/models.py`, `src/handlers/command_handler.py`
+
+**Problem Description**
+
+Старый дайджест выдавал плоское саммари без действий — «выглядит
+бессмысленно». Нужно сделать его actionable: для каждого чата явно
+показывать коммиты в обе стороны, открытые вопросы, даты/события и
+срочное. Тон саммари должен зависеть от типа чата: деловой / личный /
+смешанный.
+
+**Expected Behavior**
+
+- В каждом чате LLM работает в JSON-режиме и выдаёт строго JSON по схеме
+  (summary_md, commitments[], closed_commitments[], events[],
+  open_questions[]).
+- Саммари рендерится в MarkdownV2 с пятью секциями:
+  - заголовок с бейджем классификации (💼/👤/🤝/❓), числом сообщений,
+    «мои/его/её»;
+  - саммари (1–3 предложения нужного тона);
+  - 🤝 Коммиты (от меня / мне, дедлайн в скобках);
+  - 📅 Даты и события;
+  - ❓ Открытые вопросы (→ ему/ей / ← мне);
+  - ⚠️ Срочное (всё с `is_urgent = true`).
+- Для чата с `classification IS NULL` используется prompt **business**
+  (по умолчанию: большинство переписок владельца — деловые).
+- После всех чатов: для каждого ещё-не-классифицированного личного чата
+  с сообщениями за день LLM выдаёт `business/private/mixed + confidence
+  + reason` → бот шлёт карточку с inline-кнопками (💼/👤/🤝/⏭ позже).
+- При парсе MarkdownV2 ошибки (Telegram capricious) делается graceful
+  fallback в plain text.
+
+**Technical Details**
+
+- Один большой Alembic-миграционный файл `20260508_1300_d4e6f8a0c2b4`
+  добавляет `chats.classification VARCHAR(16)` (CHECK IN
+  ('business','private','mixed')), таблицы `commitments` и `events`.
+- `src/services/md.py` — MarkdownV2-эскейп + chunk на пустых строках.
+- `OpenAIService.complete_json` — обёртка с `response_format=json_object`.
+- `DigestService` переписан:
+  - `_format_messages` — нормализация авторов («Я:» / «Имя:» / «user_NNN:»);
+  - `_extract` — JSON-mode LLM с открытыми коммитами/событиями в контексте;
+  - `_persist` — сохраняет новые коммиты/события, помечает закрытые;
+  - `_render_block` — MarkdownV2 рендер с пятью секциями;
+  - `_suggest_classifications` — после дайджеста шлёт карточки.
+- 4 промпта в `prompts/FEATURE-010_*.txt`.
+- Команда `/glossary` + callback `glo|...` + общий callback `cls|...|<value>`.
+- `dateparser>=1.2.0` в зависимостях.
+
+**Acceptance Criteria**
+
+- [x] LLM получает уже открытые коммиты/события и не дублирует.
+- [x] Урегентность авто-определяется (LLM-флаг ИЛИ дедлайн ≤ 24ч).
+- [x] Дедлайны хранятся как `deadline_raw` + parsed `deadline_at`.
+- [x] Дефолтный prompt для unclassified — `business`.
+- [x] MarkdownV2 graceful fallback в plain text при ошибке парса.
+- [x] `make check` зелёный.
+
+**Resolution**
+
+Дайджест перешёл от плоского саммари к структурированному отчёту с
+действиями. JSON-mode даёт строгую схему, prompt-per-classification —
+правильный тон. Классификация делается после первого дайджеста с
+участием чата, кнопками подтверждается владельцем; от чата можно
+вообще отказаться от классификации (Сбросить).
+
+---
+
+### [FEATURE-008] Хранилище и команда `/commits`
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/database/models.py`,
+  `src/database/migrations/versions/20260508_1300_d4e6f8a0c2b4_glossary_commits_events.py`,
+  `src/services/digest_service.py`, `src/handlers/command_handler.py`
+
+**Problem Description**
+
+Коммиты должны жить между дайджестами: вчера обещано — сегодня видно
+ещё открытым, а после «✅ Сделано» закрывается и больше не дёргает.
+
+**Expected Behavior**
+
+- Таблица `commitments(id, chat_id, direction, text, deadline_raw,
+  deadline_at, is_urgent, status, source_message_id, created_at,
+  updated_at, completed_at)` с CHECK-constraint'ами.
+- `direction ∈ ('from_me', 'to_me')`, `status ∈ ('open', 'done',
+  'cancelled')`, `is_urgent: bool`.
+- Команда `/commits` — список всех `status='open'`, отсортированных по
+  `is_urgent DESC, deadline_at ASC NULLS LAST`, кнопки
+  «✅ Сделано»/«🗑 Отменить».
+- При следующем дайджесте LLM получает открытые коммиты как контекст и
+  явно говорит, какие закрыть (closed_commitments[id, reason]).
+- Урgent-флаг ставится либо LLM-ом по фразам «срочно/asap/горит», либо
+  автоматически если `deadline_at − now ≤ 24h`.
+
+**Technical Details**
+
+См. FEATURE-010. Команда + callback `commit|<id>|done|cancel` —
+`src/handlers/command_handler.py`.
+
+**Acceptance Criteria**
+
+- [x] Миграция добавляет таблицу с CHECK-constraint'ами.
+- [x] `/commits` показывает только открытые, кнопки работают.
+- [x] LLM видит открытые коммиты при следующем дайджесте и помечает
+      закрытыми те, что были закрыты в переписке.
+- [x] Тесты на колбэк `commit|...|done` зелёные.
+
+**Resolution**
+
+Тривиальная схема + один callback. Главное — что LLM получает контекст
+и не плодит дубли.
+
+---
+
+### [FEATURE-009] Хранилище и команда `/events` (+ авто-`past`)
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/database/models.py`,
+  `src/database/migrations/versions/20260508_1300_d4e6f8a0c2b4_glossary_commits_events.py`,
+  `src/services/digest_service.py`, `src/services/cleanup_service.py`,
+  `src/handlers/command_handler.py`
+
+**Problem Description**
+
+То же, что FEATURE-008, но для дат/событий: ужин в субботу, созвон в
+14:00 в пятницу. Когда событие прошло — оно должно перестать
+показываться.
+
+**Expected Behavior**
+
+- Таблица `events(id, chat_id, description, when_raw, when_at,
+  is_urgent, status, source_message_id, created_at, updated_at)`.
+- `status ∈ ('upcoming', 'past', 'cancelled')`.
+- Команда `/events` — список `upcoming`, кнопки «✅ Прошло»/«🗑 Отменить».
+- При дайджесте LLM получает upcoming-события, дубли не плодит.
+- В 04:00 МСК (вместе с TTL-чисткой) `CleanupService.mark_past_events`
+  переводит события из `upcoming` в `past` если `when_at < now`.
+
+**Technical Details**
+
+См. FEATURE-010. `mark_past_events()` в `CleanupService`, вызывается из
+`run_cleanup_scheduler` сразу после `purge_old_messages`.
+
+**Acceptance Criteria**
+
+- [x] Миграция, модель, команда, callback `event|<id>|done|cancel`.
+- [x] Авто-`past` для прошедших событий.
+- [x] Тесты на `mark_past_events` и колбэк зелёные.
+
+**Resolution**
+
+Симметрично коммитам, плюс автостарение. События с непарсеным `when_at`
+не трогаем — тогда нет объективного критерия, и риск спрятать важное.
+
+---
+
+### [FEATURE-007] Глоссарий чатов: business / private / mixed
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/database/models.py`,
+  `src/database/migrations/versions/20260508_1300_d4e6f8a0c2b4_glossary_commits_events.py`,
+  `src/services/digest_service.py`, `src/handlers/command_handler.py`
+
+**Problem Description**
+
+Чтобы дайджест говорил правильным тоном для каждого чата (FEATURE-010),
+нужно знать классификацию чата. Источник правды — владелец;
+бот только предлагает.
+
+**Expected Behavior**
+
+- `chats.classification` (NULL/business/private/mixed) с CHECK.
+- В дайджесте чат с NULL получает дефолтный `business`-prompt; после
+  всех саммари бот шлёт карточку с предложением модели + 4 кнопками
+  (Бизнес/Личный/Микс/Позже).
+- Команда `/glossary` — список бизнес-чатов с текущей классификацией и
+  кнопкой «⚙️», по которой можно выбрать новую (или «🧹 Сбросить»,
+  чтобы снова стал NULL).
+- Один общий callback `cls|<chat_id>|<value>` обрабатывает кнопки и из
+  карточки в дайджесте, и из `/glossary`.
+
+**Technical Details**
+
+См. FEATURE-010. `prompts/FEATURE-010_classify.txt` — JSON
+`(classification, confidence, reason)`. Карточка-предложение строится
+в `DigestService._send_classification_card`.
+
+**Acceptance Criteria**
+
+- [x] Колонка + CHECK в миграции.
+- [x] `/glossary` рендерит чаты и редактирует классификацию.
+- [x] Карточки-предложения в дайджесте работают.
+- [x] Тесты на `cls|...|business` и `cls|...|skip` зелёные.
+
+**Resolution**
+
+Owner-confirmed бакет — единственно надёжный путь, эвристика на
+сообщениях врёт слишком часто. Авто-предложение экономит время в 80%
+случаев.
+
+---
+
 ### [FEATURE-004] Telegram Business mode — observer для личных чатов
 
 - **Status:** ✅ Done
