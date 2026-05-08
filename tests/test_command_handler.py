@@ -280,3 +280,168 @@ async def test_event_action_marks_cancelled(monkeypatch):
 
     assert event.status == "cancelled"
     session.commit.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# /glossary v2 — paginated, inline buttons (FEATURE-007 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def _make_business_chat(name: str, classification=None) -> Chat:
+    chat = Chat(
+        name=name,
+        telegram_id=hash(name) & 0xFFFFFFFF,
+        type="MIXED",
+        tg_type="private",
+        description="x",
+        business_connection_id="conn-1",
+        classification=classification,
+    )
+    chat.id = uuid4()
+    return chat
+
+
+def test_glo_render_includes_pagination_when_total_exceeds_page():
+    from src.handlers.command_handler import GLOSSARY_PAGE_SIZE, _glo_render
+
+    chats = [_make_business_chat(f"Chat {i}") for i in range(GLOSSARY_PAGE_SIZE)]
+    body, kb = _glo_render(chats, total=33, offset=0, only_unset=False)
+
+    assert "стр. 1 из 4" in body
+    assert "всего 33" in body
+    # Header row + 10 chat rows + nav row.
+    assert len(kb.inline_keyboard) == 1 + GLOSSARY_PAGE_SIZE + 1
+    nav = kb.inline_keyboard[-1]
+    assert any("далее" in b.text for b in nav)
+    assert all("назад" not in b.text for b in nav)
+
+
+def test_glo_render_no_pagination_when_single_page():
+    from src.handlers.command_handler import _glo_render
+
+    chats = [_make_business_chat("A"), _make_business_chat("B")]
+    body, kb = _glo_render(chats, total=2, offset=0, only_unset=False)
+
+    assert "стр. 1 из 1" in body
+    # Header row + 2 chat rows. No nav row.
+    assert len(kb.inline_keyboard) == 3
+
+
+def test_glo_render_emits_4_buttons_per_chat_row():
+    from src.handlers.command_handler import _glo_render
+
+    chat = _make_business_chat("Маша")
+    _, kb = _glo_render([chat], total=1, offset=0, only_unset=False)
+
+    chat_row = kb.inline_keyboard[1]
+    assert [b.text for b in chat_row] == ["💼", "👤", "🤝", "⏭"]
+    # Callback data carries chat_id, value code, filter code and offset.
+    for btn in chat_row:
+        parts = btn.callback_data.split("|")
+        assert parts[0] == "gs"
+        assert parts[1] == str(chat.id)
+        assert parts[3] == "a"
+        assert parts[4] == "0"
+
+
+def test_glo_render_unset_filter_only_shows_back_when_offset_positive():
+    from src.handlers.command_handler import _glo_render
+
+    chats = [_make_business_chat(f"C{i}", classification=None) for i in range(5)]
+    _, kb = _glo_render(chats, total=20, offset=10, only_unset=True)
+
+    nav = kb.inline_keyboard[-1]
+    assert any("назад" in b.text for b in nav)
+    # filter code in pagination callback should be "u" (only_unset).
+    for btn in nav:
+        assert btn.callback_data.split("|")[2] == "u"
+
+
+@pytest.mark.asyncio
+async def test_glossary_set_writes_business(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import glossary_set
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    chat = _make_business_chat("Маша", classification=None)
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=chat)
+
+    async def fake_render_for(_session, *, only_unset, offset):
+        return "redrawn", MagicMock(), 0
+
+    monkeypatch.setattr("src.handlers.command_handler._glo_render_for", fake_render_for)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"gs|{chat.id}|b|a|0"
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await glossary_set(callback, session)
+
+    assert chat.classification == "business"
+    session.commit.assert_awaited()
+    callback.message.edit_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_glossary_set_skip_does_not_write(monkeypatch):
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import glossary_set
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    chat = _make_business_chat("Маша")
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=chat)
+
+    callback = MagicMock()
+    callback.from_user.id = 1
+    callback.data = f"gs|{chat.id}|s|a|0"
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await glossary_set(callback, session)
+
+    # Skip is purely informational — no DB write, no redraw.
+    session.commit.assert_not_awaited()
+    callback.message.edit_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_glossary_suggest_skips_chats_without_recent_messages(monkeypatch):
+    """If there are unclassified chats but none has activity in 7d, just say so."""
+    from src.config import settings as app_settings
+    from src.handlers.command_handler import _glossary_suggest
+
+    monkeypatch.setattr(app_settings, "OWNER_ID", 1)
+
+    chat = _make_business_chat("Idle", classification=None)
+    session = AsyncMock()
+
+    # First execute() returns the candidates list, second one returns no
+    # messages for that chat. We feed a small queue of fake results.
+    def make_result(scalars_list):
+        res = MagicMock()
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=scalars_list)
+        res.scalars = MagicMock(return_value=scalars)
+        return res
+
+    results_queue = [make_result([chat]), make_result([])]
+    session.execute = AsyncMock(side_effect=results_queue)
+
+    msg = MagicMock()
+    msg.bot = AsyncMock()
+    msg.answer = AsyncMock()
+
+    await _glossary_suggest(msg, session)
+
+    msg.answer.assert_awaited_once()
+    args, _ = msg.answer.await_args
+    assert "ни в одном нет сообщений" in args[0]

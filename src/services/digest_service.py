@@ -690,6 +690,28 @@ def _classification_label(value: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+async def suggest_classification_for_chat(
+    bot: Bot,
+    session: AsyncSession,
+    *,
+    chat: Chat,
+    messages: List[DBMessage],
+) -> None:
+    """Run the classifier on ``chat``'s ``messages`` and post a suggestion card.
+
+    Public entry point for ad-hoc usage from owner commands (e.g.
+    ``/glossary suggest``). Reuses the same prompt + card rendering as the
+    daily digest so the UX is identical: model proposes, owner taps a button.
+    Empty ``messages`` lists are no-ops.
+    """
+    if not messages:
+        return
+    svc = DigestService(session, bot)
+    item = _ChatDigestItem(chat=chat, messages=messages)
+    suggestion = await svc._classify_chat(item)
+    await svc._send_classification_card(item, suggestion)
+
+
 async def _send_with_fresh_session(bot: Bot, day: date) -> None:
     """Open a one-shot session, build a service and send a recorded digest."""
     from ..database.database import async_session  # local to avoid import cycle

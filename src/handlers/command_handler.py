@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -160,7 +161,8 @@ async def help_command(message: Message, session: AsyncSession) -> None:
         "📰 Дайджест и действия:\n"
         "/digest [today|yesterday|YYYY-MM-DD] — дайджест за день (по умолчанию: вчера)\n"
         "/today — дайджест за сегодня (с начала дня до сейчас)\n"
-        "/glossary — классификация чатов (бизнес / личный / микс)\n"
+        "/glossary [unset|suggest] — классификация чатов (стр. по 10, "
+        "🪄 Suggest = LLM сам предложит)\n"
         "/commits — открытые коммиты (✅ Сделано / 🗑 Отменить)\n"
         "/events — предстоящие события (✅ Прошло / 🗑 Отменить)\n\n"
         "🤝 Telegram Business:\n"
@@ -1683,73 +1685,343 @@ def _classification_badge(value: Optional[str]) -> str:
     return _CLASSIFICATION_LABELS.get(value, value)
 
 
+GLOSSARY_PAGE_SIZE = 10
+# Compact codes for callback_data (Telegram limit: 64 bytes per button).
+_GLO_VALUE_CODES = {"b": "business", "p": "private", "m": "mixed", "s": "skip", "c": "clear"}
+_GLO_FILTER_CODES = {"a": False, "u": True}  # 'a' = all, 'u' = only unset
+
+
+def _glo_select(*, only_unset: bool):
+    stmt = select(Chat).where(
+        Chat.tg_type == "private",
+        Chat.business_connection_id.isnot(None),
+    )
+    if only_unset:
+        stmt = stmt.where(Chat.classification.is_(None))
+    return stmt.order_by(Chat.name)
+
+
+async def _glo_count(session: AsyncSession, *, only_unset: bool) -> int:
+    from sqlalchemy import func
+
+    stmt = select(func.count(Chat.id)).where(
+        Chat.tg_type == "private",
+        Chat.business_connection_id.isnot(None),
+    )
+    if only_unset:
+        stmt = stmt.where(Chat.classification.is_(None))
+    res = await session.execute(stmt)
+    return int(res.scalar() or 0)
+
+
+async def _glo_fetch(session: AsyncSession, *, only_unset: bool, offset: int) -> List[Chat]:
+    stmt = _glo_select(only_unset=only_unset).offset(offset).limit(GLOSSARY_PAGE_SIZE)
+    res = await session.execute(stmt)
+    return list(res.scalars().all())
+
+
+def _glo_render(
+    chats: List[Chat], *, total: int, offset: int, only_unset: bool
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the message body and keyboard for one glossary page."""
+    filter_code = "u" if only_unset else "a"
+    filter_label = "только ❓" if only_unset else "все"
+    page_no = offset // GLOSSARY_PAGE_SIZE + 1
+    pages_total = max(1, (total + GLOSSARY_PAGE_SIZE - 1) // GLOSSARY_PAGE_SIZE)
+
+    if not chats:
+        body_lines = [
+            f"🗂 Глоссарий — {filter_label} (стр. {page_no} из {pages_total})",
+            "",
+            "(на этой странице пусто)" if total == 0 else "(всё классифицировано)",
+        ]
+    else:
+        body_lines = [
+            f"🗂 Глоссарий — {filter_label} (стр. {page_no} из {pages_total}, всего {total})",
+            "",
+            "Тапни одну из четырёх кнопок в нужной строке:",
+            "💼 Бизнес  •  👤 Личный  •  🤝 Микс  •  ⏭ позже",
+            "",
+        ]
+        for i, chat in enumerate(chats, start=offset + 1):
+            badge = _classification_badge(chat.classification)
+            body_lines.append(f"{i}. {_format_chat_name(chat)} — {badge}")
+
+    rows: List[List[InlineKeyboardButton]] = []
+    # Header: filter toggles + suggest action.
+    rows.append(
+        [
+            InlineKeyboardButton(text="🔄 Все", callback_data="gf|a"),
+            InlineKeyboardButton(text="🔍 ❓", callback_data="gf|u"),
+            InlineKeyboardButton(text="🪄 Suggest", callback_data="gsug"),
+        ]
+    )
+    # One row of 4 emoji buttons per chat (D — inline classification).
+    for chat in chats:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="💼", callback_data=f"gs|{chat.id}|b|{filter_code}|{offset}"
+                ),
+                InlineKeyboardButton(
+                    text="👤", callback_data=f"gs|{chat.id}|p|{filter_code}|{offset}"
+                ),
+                InlineKeyboardButton(
+                    text="🤝", callback_data=f"gs|{chat.id}|m|{filter_code}|{offset}"
+                ),
+                InlineKeyboardButton(
+                    text="⏭", callback_data=f"gs|{chat.id}|s|{filter_code}|{offset}"
+                ),
+            ]
+        )
+    # Pagination row (C).
+    nav: List[InlineKeyboardButton] = []
+    if offset > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="← назад",
+                callback_data=f"gp|{offset - GLOSSARY_PAGE_SIZE}|{filter_code}",
+            )
+        )
+    if offset + GLOSSARY_PAGE_SIZE < total:
+        nav.append(
+            InlineKeyboardButton(
+                text="далее →",
+                callback_data=f"gp|{offset + GLOSSARY_PAGE_SIZE}|{filter_code}",
+            )
+        )
+    if nav:
+        rows.append(nav)
+    return "\n".join(body_lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _glo_render_for(
+    session: AsyncSession, *, only_unset: bool, offset: int
+) -> tuple[str, InlineKeyboardMarkup, int]:
+    """Fetch + render one page; clamps offset if it falls past the end."""
+    total = await _glo_count(session, only_unset=only_unset)
+    if total == 0:
+        offset = 0
+    elif offset >= total:
+        # Round down to the last page.
+        offset = ((total - 1) // GLOSSARY_PAGE_SIZE) * GLOSSARY_PAGE_SIZE
+    chats = await _glo_fetch(session, only_unset=only_unset, offset=offset)
+    body, keyboard = _glo_render(chats, total=total, offset=offset, only_unset=only_unset)
+    return body, keyboard, offset
+
+
 @router.message(Command("glossary"))
-async def glossary_command(message: Message, session: AsyncSession) -> None:
-    """List all Business private chats with their classification + buttons."""
+async def glossary_command(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """Glossary of business chats with paginated inline classification.
+
+    Usage:
+        /glossary           — все бизнес-чаты, страницы по 10
+        /glossary unset     — только неклассифицированные
+        /glossary suggest   — прогнать классификатор по всем ❓ чатам
+                              с активностью за последние 7 дней и прислать
+                              карточки-предложения (1 тап на разметку).
+    """
     if not _is_owner_private(message):
         return
 
-    result = await session.execute(
-        select(Chat)
-        .where(Chat.tg_type == "private", Chat.business_connection_id.isnot(None))
-        .order_by(Chat.name)
-    )
-    chats = list(result.scalars().all())
-    if not chats:
+    arg = (command.args or "").strip().lower()
+    if arg == "suggest":
+        await _glossary_suggest(message, session)
+        return
+
+    only_unset = arg == "unset"
+    if arg and arg not in ("unset",):
+        await message.answer(
+            "Не понял команду. Примеры: /glossary, /glossary unset, /glossary suggest"
+        )
+        return
+
+    total = await _glo_count(session, only_unset=only_unset)
+    if total == 0 and not only_unset:
         await message.answer("Пока нет личных бизнес-чатов в БД.")
         return
 
-    lines = ["🗂 Глоссарий чатов\n"]
-    keyboard: List[List[InlineKeyboardButton]] = []
-    for chat in chats:
-        label = _classification_badge(chat.classification)
-        lines.append(f"• {_format_chat_name(chat)} — {label}")
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    text=f"⚙️ {_format_chat_name(chat)}",
-                    callback_data=f"glo|{chat.id}",
-                )
-            ]
-        )
-    await message.answer(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-    )
+    body, keyboard, _ = await _glo_render_for(session, only_unset=only_unset, offset=0)
+    await message.answer(body, reply_markup=keyboard)
 
 
-@router.callback_query(F.data.startswith("glo|"))
-async def glossary_pick_chat(callback: CallbackQuery, session: AsyncSession) -> None:
+@router.callback_query(F.data.startswith("gp|"))
+async def glossary_paginate(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Pagination: ← назад / далее →."""
     if not _owner_callback(callback):
         await callback.answer("Not authorised", show_alert=True)
         return
 
-    _, chat_id = callback.data.split("|", 1)
+    try:
+        _, raw_offset, filter_code = callback.data.split("|", 2)
+        offset = max(0, int(raw_offset))
+    except (ValueError, IndexError):
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    only_unset = _GLO_FILTER_CODES.get(filter_code, False)
+    body, keyboard, _ = await _glo_render_for(session, only_unset=only_unset, offset=offset)
+    try:
+        await callback.message.edit_text(body, reply_markup=keyboard)
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("gf|"))
+async def glossary_filter(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Header filter toggle (🔄 Все / 🔍 ❓). Resets offset to 0."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, filter_code = callback.data.split("|", 1)
+    except ValueError:
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    only_unset = _GLO_FILTER_CODES.get(filter_code, False)
+    body, keyboard, _ = await _glo_render_for(session, only_unset=only_unset, offset=0)
+    try:
+        await callback.message.edit_text(body, reply_markup=keyboard)
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+    await callback.answer("Только ❓" if only_unset else "Все чаты")
+
+
+@router.callback_query(F.data.startswith("gs|"))
+async def glossary_set(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Inline classification button (D): set the chat's bucket and redraw the same page."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, chat_id, value_code, filter_code, raw_offset = callback.data.split("|", 4)
+        offset = max(0, int(raw_offset))
+    except (ValueError, IndexError):
+        await callback.answer("Bad callback", show_alert=True)
+        return
+
+    only_unset = _GLO_FILTER_CODES.get(filter_code, False)
+    value = _GLO_VALUE_CODES.get(value_code)
+
+    if value == "skip":
+        await callback.answer("Окей, пропустил.")
+        return
+
     chat = await _get_chat(session, chat_id)
     if chat is None:
         await callback.answer("Chat not found", show_alert=True)
         return
 
-    body = (
-        f"⚙️ Чат: {_format_chat_name(chat)}\n"
-        f"Сейчас: {_classification_badge(chat.classification)}\n"
-        "Выбери новую классификацию:"
+    if value == "clear":
+        chat.classification = None
+    elif value in ("business", "private", "mixed"):
+        chat.classification = value
+    else:
+        await callback.answer("Bad value", show_alert=True)
+        return
+
+    chat.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+    body, keyboard, _ = await _glo_render_for(session, only_unset=only_unset, offset=offset)
+    try:
+        await callback.message.edit_text(body, reply_markup=keyboard)
+    except TelegramForbiddenError:  # pragma: no cover
+        pass
+    await callback.answer(
+        "Готово" if value != "clear" else "Сбросил",
     )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💼 Бизнес", callback_data=f"cls|{chat.id}|business"),
-                InlineKeyboardButton(text="👤 Личный", callback_data=f"cls|{chat.id}|private"),
-                InlineKeyboardButton(text="🤝 Микс", callback_data=f"cls|{chat.id}|mixed"),
-            ],
-            [
-                InlineKeyboardButton(text="🧹 Сбросить", callback_data=f"cls|{chat.id}|clear"),
-                InlineKeyboardButton(text="⏭ Позже", callback_data=f"cls|{chat.id}|skip"),
-            ],
-        ]
+
+
+@router.callback_query(F.data == "gsug")
+async def glossary_suggest_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    """🪄 Suggest button — same as /glossary suggest, posted to chat."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+    await callback.answer("Запускаю suggest…")
+    await _glossary_suggest(callback.message, session)
+
+
+async def _glossary_suggest(message: Message, session: AsyncSession) -> None:
+    """Run the classifier on every unclassified Business chat with recent activity.
+
+    For each candidate (NULL classification, has messages in the last 7 days)
+    we post a model-suggestion card identical to what the daily digest sends:
+    one tap by the owner = one chat classified.
+    """
+    from datetime import timedelta
+
+    from ..services.digest_service import suggest_classification_for_chat
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    candidates_result = await session.execute(
+        _glo_select(only_unset=True),
     )
-    await callback.message.edit_text(body, reply_markup=keyboard)
-    await callback.answer()
+    candidates = list(candidates_result.scalars().all())
+    if not candidates:
+        await message.answer("✅ Все бизнес-чаты уже классифицированы.")
+        return
+
+    # Cap LLM context per chat. 50 messages is enough for the classifier; we
+    # don't need the same 200-msg cap as the daily digest.
+    sample_cap = 50
+
+    chat_messages: List[tuple[Chat, List[DBMessage]]] = []
+    for chat in candidates:
+        msg_result = await session.execute(
+            select(DBMessage)
+            .where(DBMessage.chat_id == chat.id, DBMessage.created_at >= cutoff)
+            .order_by(DBMessage.created_at.asc())
+            .limit(sample_cap)
+        )
+        messages = list(msg_result.scalars().all())
+        if messages:
+            chat_messages.append((chat, messages))
+
+    if not chat_messages:
+        await message.answer(
+            f"❓ Неклассифицированных чатов: {len(candidates)}, "
+            "но ни в одном нет сообщений за последние 7 дней. "
+            "Пока нечего предлагать."
+        )
+        return
+
+    skipped_no_msgs = len(candidates) - len(chat_messages)
+    intro = (
+        f"🪄 Запускаю suggest-режим для {len(chat_messages)} чатов.\n"
+        f"Пропущено без активности за 7 дней: {skipped_no_msgs}.\n"
+        "Сейчас прилетят карточки — каждая = 1 тап для разметки."
+    )
+    await message.answer(intro)
+
+    sent = 0
+    failed = 0
+    for chat, messages in chat_messages:
+        try:
+            await suggest_classification_for_chat(
+                message.bot, session, chat=chat, messages=messages
+            )
+            sent += 1
+            # Tiny delay to be polite to OpenAI rate limits.
+            await asyncio.sleep(0.3)
+        except Exception as exc:  # noqa: BLE001 — owner-only, лучше досчитать остальное
+            logger.error(
+                "Suggest classify failed for chat %s: %s", chat.telegram_id, exc, exc_info=True
+            )
+            failed += 1
+
+    summary = [f"✅ Карточек отправлено: {sent}"]
+    if failed:
+        summary.append(f"❌ Ошибок: {failed} (см. логи)")
+    if skipped_no_msgs:
+        summary.append(f"⏭ Пропущено без активности: {skipped_no_msgs}")
+    await message.answer("\n".join(summary))
 
 
 @router.callback_query(F.data.startswith("cls|"))
