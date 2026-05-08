@@ -1,28 +1,24 @@
+# render.yaml — зеркало текущего деплоя на Render.
+#
+# ВНИМАНИЕ: этот файл сейчас НЕ применяется как Blueprint. Сервис
+# `valentin-bot-worker` (id: srv-cvhrontrie7s73e9tve0) и БД `superbot_db`
+# (id: dpg-cvm4r2je5dus73afbbo0-a) были созданы вручную до перехода на
+# Blueprints. Этот YAML существует как документация-зеркало: «вот что
+# должно быть выкачено в продe». Любые изменения здесь нужно отражать
+# в дашборде Render, и наоборот.
+#
+# Все админ-операции — через Render MCP, см. AGENTS.md §10.
+
 services:
-  - type: background
-    name: superbot
-    env: python
-    region: frankfurt  # или другой регион по вашему выбору
-    plan: free
+  - type: worker
+    name: valentin-bot-worker
+    runtime: python
+    region: oregon
+    plan: starter
     branch: main
-    buildCommand: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-      echo "Checking project structure..."
-      ls -la /opt/render/project/src
-      echo "Checking migrations directory..."
-      ls -la /opt/render/project/src/src/database/migrations/versions
-      echo "Running database migrations..."
-      cd /opt/render/project/src
-      echo "Current directory: $(pwd)"
-      echo "Python path: $PYTHONPATH"
-      echo "Listing migrations..."
-      python -m alembic history
-      echo "Current migration version..."
-      python -m alembic current
-      echo "Running upgrade..."
-      PYTHONPATH=/opt/render/project/src python -m alembic -v upgrade head
-    startCommand: PYTHONPATH=/opt/render/project/src python -m src.main
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+    startCommand: python -m src.main
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -35,4 +31,10 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OWNER_ID
-        sync: false 
+        sync: false
+
+databases:
+  - name: superbot_db
+    plan: basic-1gb
+    region: oregon
+    postgresMajorVersion: "16"

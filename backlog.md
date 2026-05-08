@@ -453,7 +453,103 @@ type "float"; expected "Column[float]"`). Из-за этого `mypy` пришл
 
 ---
 
+### [OPS-001] Запускать `alembic upgrade head` в build на Render
+
+- **Status:** ✅ Done
+- **Priority:** Medium
+- **Component:** Render dashboard (`valentin-bot-worker`), `render.yaml`
+
+**Problem Description**
+
+На сервисе `valentin-bot-worker` (id `srv-cvhrontrie7s73e9tve0`) build
+command был `pip install -r requirements.txt`, без `alembic upgrade head`.
+Это значит, что любая новая миграция в `src/database/migrations/versions/`
+не применилась бы при деплое, и прод бы падал на `relation ... does not
+exist`. Бомба замедленного действия — пока схема не менялась, не было
+заметно.
+
+**Expected Behavior**
+
+Каждый деплой автоматически прогоняет миграции до head перед стартом
+процесса.
+
+**Technical Details**
+
+- В дашборде Render → `Settings` → `Build & Deploy` → `Build Command`
+  обновлено на:
+  ```
+  pip install -r requirements.txt && alembic upgrade head
+  ```
+- В `render.yaml` (документация-зеркало) — то же значение.
+- Ничего нового в коде не нужно: Alembic уже сконфигурирован
+  (`alembic.ini` + `src/database/migrations/env.py`).
+
+**Acceptance Criteria**
+
+- [x] Build command на сервисе включает `alembic upgrade head`.
+- [x] `render.yaml` отражает то же.
+- [x] При следующем деплое миграции применяются (проверено вручную
+      пользователем после переключения).
+
+**Resolution**
+
+- Build command обновлён руками пользователем через Render dashboard.
+- `render.yaml` синхронизирован с реальностью (см. OPS-002).
+
+---
+
 ## 🟢 Low Priority
+
+### [OPS-002] Синхронизировать `render.yaml` с реальным деплоем
+
+- **Status:** ✅ Done
+- **Priority:** Low
+- **Component:** `render.yaml`
+
+**Problem Description**
+
+`render.yaml` в репозитории описывал гипотетический blueprint, который
+никогда не применялся, и расходился с реальным сервисом по нескольким
+ключевым полям:
+
+| Поле | Было в YAML | Реально на Render |
+| --- | --- | --- |
+| name | `superbot` | `valentin-bot-worker` |
+| region | `frankfurt` | `oregon` |
+| plan | `free` | `starter` |
+| Python | 3.11.0 в env | без `PYTHON_VERSION` (теперь 3.11.0) |
+| buildCommand | многострочный с alembic | без alembic (теперь с alembic) |
+| startCommand | `PYTHONPATH=... python -m src.main` | `python -m src.main` |
+| autoDeploy | не указано | yes / on commit |
+
+Это сбивало с толку: глядя в репо, можно было подумать что blueprint
+применяется, и любая правка YAML что-то сделает.
+
+**Expected Behavior**
+
+`render.yaml` — это документация-зеркало того, что реально развёрнуто.
+Шапка явно проговаривает, что blueprint НЕ применяется и любые правки
+надо вручную дублировать в Render dashboard.
+
+**Technical Details**
+
+- Файл переписан полностью под реальное состояние (см. `render.yaml`).
+- Имя БД (`superbot_db`), регион и план уточнены через Render MCP
+  (`list_postgres_instances`, `get_service`).
+- В `databases:` зафиксирован `postgresMajorVersion: "16"`.
+
+**Acceptance Criteria**
+
+- [x] `render.yaml` соответствует реальному сервису.
+- [x] В шапке файла явно сказано «blueprint не применяется, это
+      зеркало-документация».
+- [x] Сервис продолжает работать без изменений.
+
+**Resolution**
+
+- `render.yaml` приведён в соответствие с реальностью.
+
+---
 
 ### [DOC-001] Привести `README.md` к актуальному состоянию
 
