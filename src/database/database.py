@@ -1,52 +1,54 @@
-import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+"""Async SQLAlchemy engine, session factory and helpers."""
+
+from __future__ import annotations
+
+import logging
+from typing import AsyncIterator
+
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import settings
+
 from .base import Base
-from src.database.models import *  # Import all models to register them with Base
+from .models import *  # noqa: F401,F403 — register models with Base
 
-# Create async engine
-engine = create_async_engine(settings.DATABASE_URL, echo=True)
+logger = logging.getLogger(__name__)
 
-# Create async session factory
-async_session = sessionmaker(
+engine = create_async_engine(settings.get_async_database_url(), echo=False)
+
+async_session = async_sessionmaker(
     engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
 
-async def reset_db():
-    """Reset the database by dropping all tables and creating new ones."""
+
+async def reset_db() -> None:
+    """Drop and recreate all tables. DESTRUCTIVE — for local dev only."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        print("✅ Database reset successfully!")
+        logger.info("Database reset successfully")
 
-async def init_db():
-    """Initialize the database by creating tables if they don't exist."""
+
+async def init_db() -> None:
+    """Create tables if the schema is empty."""
     async with engine.begin() as conn:
-        # Check if tables exist using raw SQL
-        result = await conn.run_sync(
-            lambda sync_conn: sync_conn.execute(
-                text("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public'
-                    );
-                """)
-            ).scalar()
+        result = await conn.execute(
+            text(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public')"
+            )
         )
-        
-        # Create tables only if they don't exist
-        if not result:
+        exists = result.scalar()
+        if not exists:
             await conn.run_sync(Base.metadata.create_all)
-            print("✅ Database tables created successfully!")
+            logger.info("Database tables created successfully")
         else:
-            print("⚠️ Database tables already exist. If you need to reset the database, use reset_db()")
+            logger.info("Database tables already exist; nothing to do")
 
-async def get_session() -> AsyncSession:
-    """Get database session."""
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """Yield an ``AsyncSession`` and close it on exit."""
     async with async_session() as session:
-        yield session 
+        yield session

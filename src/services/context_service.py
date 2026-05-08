@@ -1,265 +1,251 @@
-from datetime import datetime, timedelta
-from typing import List, Optional, Tuple, Dict, Any
-from uuid import UUID
+"""Thread / context / tag service for the bot's chat memory."""
+
+from __future__ import annotations
+
 import logging
 from collections import Counter
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database.models import DBMessage, MessageThread, MessageContext, Tag, MessageTag
+from ..database.models import DBMessage, MessageContext, MessageTag, MessageThread, Tag
 from .openai_service import OpenAIService
+from .prompts import load_prompt
 
 logger = logging.getLogger(__name__)
 
+
 class ContextService:
+    """Threads, contexts and tags around the message stream."""
+
     def __init__(self, session: AsyncSession):
         self.session = session
         self.openai = OpenAIService()
 
-    async def get_or_create_thread(self, chat_id: int, topic: Optional[str] = None) -> MessageThread:
-        """Get active thread for the chat or create a new one."""
-        # Try to find an active thread
-        query = select(MessageThread).where(
-            MessageThread.chat_id == chat_id,
-            MessageThread.is_active == True
+    async def get_or_create_thread(
+        self,
+        chat_id: UUID,
+        topic: Optional[str] = None,
+    ) -> MessageThread:
+        """Return the active thread for ``chat_id``, creating one if needed."""
+        result = await self.session.execute(
+            select(MessageThread).where(
+                MessageThread.chat_id == chat_id,
+                MessageThread.is_active.is_(True),
+            )
         )
-        result = await self.session.execute(query)
         thread = result.scalar_one_or_none()
 
         if thread and not topic:
             return thread
 
-        # Create new thread if none exists or topic changed
         new_thread = MessageThread(
             chat_id=chat_id,
             topic=topic or "General Discussion",
-            is_active=True
+            is_active=True,
         )
         self.session.add(new_thread)
-        await self.session.commit()
 
-        if thread:
-            # Deactivate old thread
+        if thread is not None:
             thread.is_active = False
-            await self.session.commit()
 
+        await self.session.commit()
         return new_thread
 
     async def analyze_message(self, message: DBMessage) -> Tuple[List[str], float]:
-        """Analyze message content for tags and importance."""
-        prompt = f"""
-        Analyze the following message and suggest tags and importance (0-1):
-        {message.text}
-
-        Format:
-        tags: tag1, tag2, tag3
-        importance: 0.X
-        """
-        response = await self.openai.chat_completion(prompt)
-        lines = response.split('\n')
-        tags = [tag.strip() for tag in lines[0].split(':')[1].split(',')]
-        importance = float(lines[1].split(':')[1])
-        return tags, importance
+        """Use the LLM to suggest tags and an importance score."""
+        prompt = load_prompt("TECH-001_message_analysis")
+        response = await self.openai.chat_completion(prompt.format(message=message.text or ""))
+        return _parse_message_analysis(response)
 
     async def get_or_create_tags(self, tag_names: List[str]) -> List[Tag]:
-        """Get or create tags by name."""
-        tags = []
+        """Resolve a list of tag names to ``Tag`` rows, creating missing ones."""
+        tags: List[Tag] = []
         for name in tag_names:
-            query = select(Tag).where(Tag.name == name)
-            result = await self.session.execute(query)
-            tag = await result.scalar_one_or_none()
-
-            if not tag:
-                tag = Tag(name=name)
-                await self.session.add(tag)
+            clean = name.strip().lstrip("#")
+            if not clean:
+                continue
+            result = await self.session.execute(select(Tag).where(Tag.name == clean))
+            tag = result.scalar_one_or_none()
+            if tag is None:
+                tag = Tag(name=clean)
+                self.session.add(tag)
                 await self.session.commit()
-
             tags.append(tag)
         return tags
 
-    async def add_tags_to_message(self, message: DBMessage, tags: List[Tag], is_auto: bool = True) -> None:
-        """Add tags to a message."""
+    async def add_tags_to_message(
+        self,
+        message: DBMessage,
+        tags: List[Tag],
+        is_auto: bool = True,
+    ) -> None:
+        """Attach a list of tags to a message."""
         for tag in tags:
-            message_tag = MessageTag(
-                message_id=message.id,
-                tag_id=tag.id,
-                is_auto=is_auto
-            )
-            self.session.add(message_tag)
+            self.session.add(MessageTag(message_id=message.id, tag_id=tag.id, is_auto=is_auto))
         await self.session.commit()
 
     async def update_thread_context(self, thread: MessageThread) -> None:
-        """Update thread context based on recent messages."""
-        # Get recent messages from thread
-        query = select(DBMessage).where(
-            DBMessage.thread_id == thread.id
-        ).order_by(DBMessage.created_at.desc()).limit(10)
-        result = await self.session.execute(query)
-        result_scalars = await result.scalars()
-        messages = await result_scalars.all()
-
+        """Refresh the rolling context summary of a thread from its last messages."""
+        result = await self.session.execute(
+            select(DBMessage)
+            .where(DBMessage.thread_id == thread.id)
+            .order_by(DBMessage.created_at.desc())
+            .limit(10)
+        )
+        messages = list(result.scalars().all())
         if not messages:
             return
 
-        # Generate context summary
-        messages_text = "\n".join([f"- {msg.text}" for msg in messages])
-        prompt = f"""
-        Summarize the following conversation:
-        {messages_text}
+        prompt = load_prompt("TECH-001_thread_summary")
+        messages_text = "\n".join(f"- {msg.text}" for msg in messages if msg.text)
+        summary = await self.openai.chat_completion(prompt.format(messages_text=messages_text))
 
-        Format:
-        Brief summary in 1-2 sentences.
-        """
-        summary = await self.openai.chat_completion(prompt)
-
-        # Update or create context
-        query = select(MessageContext).where(MessageContext.thread_id == thread.id)
-        result = await self.session.execute(query)
-        context = await result.scalar_one_or_none()
-
-        if context:
+        result = await self.session.execute(
+            select(MessageContext).where(MessageContext.thread_id == thread.id)
+        )
+        context = result.scalar_one_or_none()
+        if context is not None:
             context.context_summary = summary
         else:
-            context = MessageContext(
-                thread_id=thread.id,
-                context_summary=summary
-            )
-            await self.session.add(context)
-
+            self.session.add(MessageContext(thread_id=thread.id, context_summary=summary))
         await self.session.commit()
 
     async def find_related_threads(self, thread: MessageThread) -> List[MessageThread]:
-        """Find threads related to the current one."""
-        # Get thread context
-        query = select(MessageContext).where(MessageContext.thread_id == thread.id)
-        result = await self.session.execute(query)
-        context = await result.scalar_one_or_none()
-
-        if not context:
+        """Find threads with semantically similar context summaries."""
+        result = await self.session.execute(
+            select(MessageContext).where(MessageContext.thread_id == thread.id)
+        )
+        context = result.scalar_one_or_none()
+        if context is None or not context.context_summary:
             return []
 
-        # Get other active threads
-        query = select(MessageThread).where(
-            MessageThread.chat_id == thread.chat_id,
-            MessageThread.id != thread.id,
-            MessageThread.is_active == True
+        result = await self.session.execute(
+            select(MessageThread).where(
+                MessageThread.chat_id == thread.chat_id,
+                MessageThread.id != thread.id,
+                MessageThread.is_active.is_(True),
+            )
         )
-        result = await self.session.execute(query)
-        result_scalars = await result.scalars()
-        other_threads = await result_scalars.all()
+        other_threads = list(result.scalars().all())
 
-        # Find related threads based on context similarity
-        related_threads = []
-        for other_thread in other_threads:
-            query = select(MessageContext).where(MessageContext.thread_id == other_thread.id)
-            result = await self.session.execute(query)
-            other_context = await result.scalar_one_or_none()
+        related: List[MessageThread] = []
+        for other in other_threads:
+            other_ctx_result = await self.session.execute(
+                select(MessageContext).where(MessageContext.thread_id == other.id)
+            )
+            other_ctx = other_ctx_result.scalar_one_or_none()
+            if other_ctx is None or not other_ctx.context_summary:
+                continue
 
-            if other_context:
-                similarity = await self.openai.calculate_similarity(
-                    context.context_summary,
-                    other_context.context_summary
-                )
-                if similarity > 0.7:  # Threshold for relatedness
-                    related_threads.append(other_thread)
+            similarity = await self.openai.calculate_similarity(
+                context.context_summary,
+                other_ctx.context_summary,
+            )
+            if similarity > 0.7:
+                related.append(other)
 
-        return related_threads
+        return related
 
     async def get_thread_stats(self, thread: MessageThread) -> Dict[str, Any]:
-        """Get statistics for a message thread."""
-        # Get all messages in the thread
-        query = select(DBMessage).where(DBMessage.thread_id == thread.id)
-        result = await self.session.execute(query)
-        messages = result.scalars().all()
-        
+        """Return a small dict with thread statistics, or ``{}`` if empty."""
+        result = await self.session.execute(
+            select(DBMessage).where(DBMessage.thread_id == thread.id)
+        )
+        messages = list(result.scalars().all())
         if not messages:
             return {}
-        
-        # Calculate basic statistics
-        total_messages = len(messages)
-        unique_users = len(set(msg.user_id for msg in messages))
-        
-        # Calculate duration
-        first_message = min(messages, key=lambda m: m.created_at)
-        last_message = max(messages, key=lambda m: m.created_at)
-        duration = (last_message.created_at - first_message.created_at).total_seconds() / 3600
-        
-        # Get top tags
-        tag_query = select(MessageTag).join(Tag).where(MessageTag.message_id.in_([m.id for m in messages]))
-        result = await self.session.execute(tag_query)
-        message_tags = result.scalars().all()
-        
-        tag_counts = Counter(tag.tag.name for tag in message_tags)
-        top_tags = tag_counts.most_common(5)
-        
+
+        message_count = len(messages)
+        unique_users = len({msg.user_id for msg in messages})
+
+        first_msg = min(messages, key=lambda m: m.created_at)
+        last_msg = max(messages, key=lambda m: m.created_at)
+        duration_hours = max(
+            0.0,
+            (last_msg.created_at - first_msg.created_at).total_seconds() / 3600.0,
+        )
+
+        avg_message_length = sum(len(m.text or "") for m in messages) / message_count
+        messages_per_hour = (
+            message_count / duration_hours if duration_hours else float(message_count)
+        )
+
+        tag_counter: Counter[str] = Counter()
+        for msg in messages:
+            for mt in msg.tags or []:
+                if mt.tag is not None:
+                    tag_counter[mt.tag.name] += 1
+        top_tags = [name for name, _ in tag_counter.most_common(5)]
+
         return {
-            "total_messages": total_messages,
+            "message_count": message_count,
+            "total_messages": message_count,  # backwards-compatible alias
             "unique_users": unique_users,
-            "duration_hours": duration,
-            "top_tags": top_tags
+            "duration_hours": duration_hours,
+            "avg_message_length": avg_message_length,
+            "messages_per_hour": messages_per_hour,
+            "top_tags": top_tags,
         }
 
+    async def get_context_for_summary(self, chat_id: UUID) -> str:
+        """Return a brief context summary for a chat (latest active thread)."""
+        thread = await self.get_or_create_thread(chat_id)
+        result = await self.session.execute(
+            select(MessageContext).where(MessageContext.thread_id == thread.id)
+        )
+        context = result.scalar_one_or_none()
+        return context.context_summary if context and context.context_summary else ""
+
     async def generate_chat_summary(self, messages: List[DBMessage]) -> str:
-        """Generate a summary of chat messages using OpenAI."""
+        """Generate a friendly retelling of the given messages."""
         if not messages:
             return "No messages to summarize."
-        
-        # Get unique user IDs from messages
-        user_ids = set(msg.user_id for msg in messages)
-        logger.info(f"Found {len(user_ids)} unique users in messages")
-        
-        # Create a dictionary to store user names
-        user_names = {}
-        
-        # Get the first message to access the bot
+
         first_msg = messages[0]
         chat = first_msg.chat
-        
-        # Get user names from Telegram API
+        user_ids = {msg.user_id for msg in messages}
+        user_names: Dict[int, str] = {}
+
         for user_id in user_ids:
             try:
-                # Try to get user info from Telegram
-                user = await first_msg.bot.get_chat_member(chat.telegram_id, user_id)
-                if user and user.user:
-                    user_names[user_id] = user.user.first_name
-                    if user.user.last_name:
-                        user_names[user_id] += f" {user.user.last_name}"
-                    logger.info(f"Successfully got name for user {user_id}: {user_names[user_id]}")
+                member = await first_msg.bot.get_chat_member(chat.telegram_id, user_id)
+                if member and member.user:
+                    full = member.user.first_name or ""
+                    if member.user.last_name:
+                        full = f"{full} {member.user.last_name}".strip()
+                    user_names[user_id] = full or f"User {user_id}"
                 else:
-                    logger.warning(f"User info is incomplete for {user_id}")
                     user_names[user_id] = f"User {user_id}"
-            except Exception as e:
-                logger.error(f"Error getting user info for {user_id}: {e}", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 — TG API может отдать что угодно
+                logger.warning("Could not resolve user %s: %s", user_id, exc)
                 user_names[user_id] = f"User {user_id}"
-        
-        # Prepare messages for summarization
-        messages_text = "\n".join([
-            f"{msg.created_at.strftime('%Y-%m-%d %H:%M')} - {user_names.get(msg.user_id, f'User {msg.user_id}')}: {msg.text}"
+
+        messages_text = "\n".join(
+            f"{msg.created_at.strftime('%Y-%m-%d %H:%M')} - "
+            f"{user_names.get(msg.user_id, f'User {msg.user_id}')}: {msg.text}"
             for msg in messages
-        ])
-        
-        # Create prompt for summarization
-        prompt = f"""Прочитай переписку и коротко перескажи, о чём шёл разговор — так, как будто пересказываешь другу.
-Пиши естественно и живо, без лишней формальности.
-Можно упомянуть общее настроение, интересные моменты и то, что людям было важно.
-Пиши на том же языке, на котором был чат.
+            if msg.text
+        )
+        prompt = load_prompt("TECH-001_chat_summary")
+        return await self.openai.chat_completion(prompt.format(messages_text=messages_text))
 
-Формат:
 
-О чём говорили: [Ключевые темы — простыми словами]
-
-Что решили / запланировали: [Итоги, договорённости, планы]
-
-Что запомнилось: [Интересные, эмоциональные или неожиданные моменты]
-
-Какая была атмосфера: [Общее настроение — например, дружелюбная, напряжённая, весёлая и т.д.]
-
-Чат:
-{messages_text}"""
-
-        # Generate summary using OpenAI
-        openai_service = OpenAIService()
-        response = await openai_service.chat_completion(prompt)
-        
-        return response 
+def _parse_message_analysis(response: str) -> Tuple[List[str], float]:
+    """Parse the ``tags: ...`` / ``importance: 0.X`` response from the LLM."""
+    tags: List[str] = []
+    importance = 0.5
+    for line in response.splitlines():
+        line = line.strip()
+        if line.lower().startswith("tags:"):
+            _, _, raw = line.partition(":")
+            tags = [t.strip() for t in raw.split(",") if t.strip()]
+        elif line.lower().startswith("importance:"):
+            _, _, raw = line.partition(":")
+            try:
+                importance = float(raw.strip())
+            except ValueError:
+                importance = 0.5
+    return tags, max(0.0, min(1.0, importance))

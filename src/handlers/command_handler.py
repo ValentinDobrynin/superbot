@@ -1,1160 +1,1165 @@
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+"""Owner-facing commands and inline-callback handlers.
+
+Все команды отвечают только владельцу (``settings.OWNER_ID``) и только в
+личном чате с ботом. Управление чатами идёт через выбор чата в инлайн-
+клавиатуре, поиск чата всегда по ``Chat.id`` (UUID); ``Chat.name`` /
+``Chat.telegram_id`` используются только для отображения и Telegram API.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+from uuid import UUID
+
+from aiogram import F, Router
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
-from sqlalchemy.sql import func
-from datetime import datetime, timedelta, timezone
-import logging
-import re
-from typing import List
-from collections import Counter
 
-from ..database.models import Chat, Style, ChatType, DBMessage, MessageTag, Tag, MessageThread, MessageContext, MessageStats
 from ..config import settings
-from ..services.openai_service import OpenAIService
+from ..database.models import (
+    Chat,
+    ChatType,
+    DBMessage,
+    MessageContext,
+    MessageThread,
+    Style,
+    Tag,
+)
 from ..services.context_service import ContextService
+from ..services.openai_service import OpenAIService
 from ..services.stats_service import StatsService
-from aiogram.exceptions import TelegramForbiddenError
-from ..database.database import get_session
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-async def update_chat_title(message: Message, chat_id: int, session: AsyncSession) -> None:
-    """Update chat title in database."""
+# ---------------------------------------------------------------------------
+# Permissions / helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_owner_private(message: Message) -> bool:
+    """Owner-only AND only in a private chat with the bot."""
+    return (
+        message.from_user is not None
+        and message.from_user.id == settings.OWNER_ID
+        and message.chat.type == "private"
+    )
+
+
+def _owner_callback(callback: CallbackQuery) -> bool:
+    return callback.from_user is not None and callback.from_user.id == settings.OWNER_ID
+
+
+async def _get_chat(session: AsyncSession, chat_id: str) -> Optional[Chat]:
+    """Fetch a chat by string UUID, returning ``None`` on bad UUID or miss."""
     try:
-        # Get chat from database first
-        result = await session.execute(
-            select(Chat).where(Chat.id == chat_id)
-        )
-        chat = result.scalar_one_or_none()
-        
-        if not chat:
-            logger.info(f"Chat {chat_id} not found in database, skipping title update")
-            return  # Chat not in database, skip update
-        
-        try:
-            # Use telegram_id for Telegram API
-            chat_info = await message.bot.get_chat(chat.telegram_id)
-            logger.info(f"Got chat info from Telegram: {chat_info.title}")
-            
-            if chat.name != chat_info.title:
-                chat.name = chat_info.title
-                chat.updated_at = datetime.now(timezone.utc)
-                await session.commit()
-                logger.info(f"Updated chat title for chat_id: {chat_id}")
-            else:
-                logger.info(f"Chat title is already up to date: {chat.name}")
-    except TelegramForbiddenError as e:
-        logger.error(f"Failed to update chat title for chat_id {chat_id}: {str(e)}")
-        # Remove chat from database if bot was kicked
-            await session.delete(chat)
-            await session.commit()
-            logger.info(f"Removed chat {chat_id} from database as bot was kicked")
-    except Exception as e:
-            if "chat not found" in str(e).lower():
-                logger.error(f"Chat {chat_id} not found in Telegram, skipping title update")
-                # Don't delete the chat, just skip title update
-            else:
-        logger.error(f"Error updating chat title for chat_id {chat_id}: {str(e)}")
-                # Don't remove chat for other errors
-    except Exception as e:
-        logger.error(f"Error in update_chat_title for chat_id {chat_id}: {str(e)}")
+        uuid_value = UUID(chat_id)
+    except (ValueError, AttributeError):
+        return None
+    return await session.get(Chat, uuid_value)
+
+
+async def _get_all_chats(session: AsyncSession) -> List[Chat]:
+    result = await session.execute(select(Chat).order_by(Chat.name))
+    return list(result.scalars().all())
+
+
+async def update_chat_title(message: Message, chat_id: UUID, session: AsyncSession) -> None:
+    """Refresh ``Chat.name`` from Telegram. Safe to call best-effort."""
+    chat = await session.get(Chat, chat_id)
+    if chat is None:
+        logger.info("Chat %s not in DB, skipping title update", chat_id)
+        return
+
+    try:
+        chat_info = await message.bot.get_chat(chat.telegram_id)
+    except TelegramForbiddenError:
+        logger.warning("Bot was kicked from chat %s, removing record", chat.telegram_id)
+        await session.delete(chat)
+        await session.commit()
+        return
+    except Exception as exc:  # noqa: BLE001 — Telegram errors vary
+        text = str(exc).lower()
+        if "chat not found" in text:
+            logger.info("Chat %s not found in Telegram, skipping title update", chat.telegram_id)
+            return
+        logger.error("Error fetching chat info for %s: %s", chat.telegram_id, exc)
+        return
+
+    new_title = getattr(chat_info, "title", None) or chat.name
+    if new_title and chat.name != new_title:
+        chat.name = new_title
+        chat.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        logger.info("Updated chat title for %s -> %s", chat.telegram_id, new_title)
+
+
+def _format_chat_name(chat: Chat) -> str:
+    return chat.name or f"Chat {chat.telegram_id}"
+
+
+def _chat_keyboard(chats: List[Chat], prefix: str) -> InlineKeyboardMarkup:
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=f"📱 {_format_chat_name(chat)}",
+                callback_data=f"{prefix}|{chat.id}",
+            )
+        ]
+        for chat in chats
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# FSM states
+# ---------------------------------------------------------------------------
+
 
 class TestStates(StatesGroup):
-    waiting_for_chat = State()
     waiting_for_message = State()
     waiting_for_probability = State()
     waiting_for_importance = State()
     waiting_for_hours = State()
 
+
 class UploadState(StatesGroup):
     waiting_for_dump = State()
-    waiting_for_type = State()
 
-def is_owner(user_id: int) -> bool:
-    return user_id == settings.OWNER_ID
+
+# ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
 
 @router.message(Command("help"))
-async def help_command(message: Message, session: AsyncSession):
+async def help_command(message: Message, session: AsyncSession) -> None:
     """Show help message."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if not _is_owner_private(message):
         return
-    
-    help_text = """🤖 Bot Commands:
 
-📊 Status & Info:
-/help - Show this help message
-/status - Show bot status and statistics
-/list_chats - List all chats with settings
-
-📈 Analytics:
-/summ - Generate chat summary
-
-⚙️ Chat Settings:
-/setmode - Toggle silent mode in chats (bot reads but doesn't respond)
-/set_style - Set chat style (work/friendly/mixed)
-/set_probability - Set response probability
-/set_importance - Set importance threshold
-/smart_mode - Toggle smart mode
-
-🔄 Training & Style:
-/upload - Upload new training data
-/refresh - Refresh style guide
-/test - Test bot response
-
-🏷 Content Management:
-/tag - Manage message tags
-/thread - Manage message threads
-
-🔒 System:
-/shutdown - Toggle global silent mode
-/style - View current style profiles"""
-    
+    help_text = (
+        "🤖 Bot Commands:\n\n"
+        "📊 Status & Info:\n"
+        "/help - Show this help message\n"
+        "/status - Show bot status and statistics\n"
+        "/list_chats - List all chats with settings\n\n"
+        "📈 Analytics:\n"
+        "/summ - Generate chat summary\n\n"
+        "⚙️ Chat Settings:\n"
+        "/setmode - Toggle silent mode in chats (bot reads but doesn't respond)\n"
+        "/set_style - Set chat style (work/friendly/mixed)\n"
+        "/set_probability - Set response probability\n"
+        "/set_importance - Set importance threshold\n"
+        "/smart_mode - Toggle smart mode\n\n"
+        "🔄 Training & Style:\n"
+        "/upload - Upload new training data\n"
+        "/refresh - Refresh style guide\n"
+        "/test - Test bot response\n\n"
+        "🏷 Content Management:\n"
+        "/tag - Manage message tags\n"
+        "/thread - Manage message threads\n\n"
+        "🔒 System:\n"
+        "/shutdown - Toggle global silent mode\n"
+        "/style - View current style profiles"
+    )
     await message.answer(help_text, parse_mode=None)
 
+
+# ---------------------------------------------------------------------------
+# /status
+# ---------------------------------------------------------------------------
+
+
 @router.message(Command("status"))
-async def status_command(message: Message, session: AsyncSession):
+async def status_command(message: Message, session: AsyncSession) -> None:
     """Show bot status with detailed statistics."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if not _is_owner_private(message):
         return
-    
-    logger.info("Starting status command")
-    
-    # Get all chats
-    chats_query = select(Chat)
-    logger.info(f"Executing query: {chats_query}")
-    chats_result = await session.execute(chats_query)
-    chats = chats_result.scalars().all()
-    logger.info(f"Found {len(chats)} chats in database")
-    
-    # Update chat titles
+
+    chats = await _get_all_chats(session)
     for chat in chats:
-        logger.info(f"Updating title for chat {chat.id} (current title: {chat.name})")
         await update_chat_title(message, chat.id, session)
-    
-    # Create keyboard with chat buttons
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"📱 {chat.name}",
-                callback_data=f"stats_{chat.id}"
-            )
-        ])
-    
-    status_text = "🤖 Bot Status:\n\n"
-    
-    # Global status
-    if settings.is_shutdown:
-        status_text += "🔴 Global silent mode is enabled\n"
-    else:
-        status_text += "🟢 Bot is running normally\n"
-    
-    status_text += f"\n📊 Select a chat to view detailed statistics:\n"
-    
+
+    text = "🤖 Bot Status:\n\n"
+    text += (
+        "🔴 Global silent mode is enabled\n"
+        if settings.is_shutdown
+        else "🟢 Bot is running normally\n"
+    )
+    text += "\n📊 Select a chat to view detailed statistics:\n"
+
+    if not chats:
+        await message.answer(text + "\n(no chats yet)", parse_mode=None)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text=f"📱 {_format_chat_name(c)}", callback_data=f"stats|{c.id}")]
+        for c in chats
+    ]
     await message.answer(
-        status_text,
+        text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-        parse_mode=None
+        parse_mode=None,
     )
 
-@router.callback_query(lambda c: c.data.startswith("stats_"))
-async def process_stats_selection(callback: CallbackQuery, session: AsyncSession):
+
+@router.callback_query(F.data.startswith("stats|"))
+async def process_stats_selection(callback: CallbackQuery, session: AsyncSession) -> None:
     """Process chat selection for statistics."""
-    if callback.from_user.id != settings.OWNER_ID:
+    if not _owner_callback(callback):
         await callback.answer("Only the owner can view statistics", show_alert=True)
         return
-    
-    chat_id = callback.data.split("_")[1]  # Keep as string since it's a UUID
-    chat = await session.get(Chat, chat_id)
-    
-    if not chat:
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
         await callback.answer("Chat not found", show_alert=True)
         return
-    
-    # Get statistics
-    stats_service = StatsService()
-    stats = await stats_service.get_stats(chat_id, session)
-    
-    # Format statistics
-    status_text = f"📊 Statistics for {chat.name}:\n\n"
-    
-    # Basic stats
-    status_text += "📈 Basic Statistics:\n"
-    status_text += f"• Messages (week): {stats.message_count}\n"
-    status_text += f"• Active users: {stats.user_count}\n"
-    status_text += f"• Avg message length: {stats.avg_length:.1f} chars\n"
-    
-    # Content stats
-    status_text += "\n🎨 Content Analysis:\n"
-    status_text += f"• Emoji usage: {stats.emoji_count}\n"
-    status_text += f"• Sticker usage: {stats.sticker_count}\n"
-    
+
+    stats = await StatsService().get_stats(chat.id, session)
+
+    lines = [f"📊 Statistics for {_format_chat_name(chat)}:\n"]
+    lines.append("📈 Basic Statistics:")
+    lines.append(f"• Messages (week): {stats.message_count}")
+    lines.append(f"• Active users: {stats.user_count}")
+    lines.append(f"• Avg message length: {stats.avg_length:.1f} chars\n")
+
+    lines.append("🎨 Content Analysis:")
+    lines.append(f"• Emoji usage: {stats.emoji_count}")
+    lines.append(f"• Sticker usage: {stats.sticker_count}")
+
     if stats.top_emojis:
-        status_text += "\n😊 Top Emojis:\n"
-        for emoji, count in list(stats.top_emojis.items())[:5]:
-            status_text += f"• {emoji}: {count}\n"
-    
-    if stats.top_stickers:
-        status_text += "\n🎯 Top Stickers:\n"
-        for sticker_id, count in list(stats.top_stickers.items())[:5]:
-            status_text += f"• {sticker_id}: {count}\n"
-    
+        lines.append("\n😊 Top Emojis:")
+        for emo, count in list(stats.top_emojis.items())[:5]:
+            lines.append(f"• {emo}: {count}")
+
     if stats.top_words:
-        status_text += "\n📝 Top Words:\n"
+        lines.append("\n📝 Top Words:")
         for word, count in list(stats.top_words.items())[:5]:
-            status_text += f"• {word}: {count}\n"
-    
+            lines.append(f"• {word}: {count}")
+
     if stats.top_topics:
-        status_text += "\n💬 Top Topics:\n"
+        lines.append("\n💬 Top Topics:")
         for topic in stats.top_topics[:5]:
-            status_text += f"• {topic['topic']}: {topic['count']}\n"
-    
-    # Activity stats
-    status_text += "\n⏰ Activity Analysis:\n"
+            if isinstance(topic, dict):
+                lines.append(f"• {topic.get('topic')}: {topic.get('count')}")
+
+    lines.append("\n⏰ Activity Analysis:")
     if stats.most_active_hour is not None:
-        status_text += f"• Most active hour: {stats.most_active_hour:02d}:00\n"
+        lines.append(f"• Most active hour: {stats.most_active_hour:02d}:00")
     if stats.most_active_day:
-        status_text += f"• Most active day: {stats.most_active_day}\n"
-    
+        lines.append(f"• Most active day: {stats.most_active_day}")
+
     if stats.activity_trend:
-        status_text += "\n📅 Activity Trend:\n"
+        lines.append("\n📅 Activity Trend:")
         for day in stats.activity_trend:
-            status_text += f"• {day['date']}: {day['count']} messages\n"
-    
-    # Chat settings
-    status_text += "\n⚙️ Chat Settings:\n"
-    status_text += f"• Type: {chat.type}\n"
-    status_text += f"• Probability: {chat.response_probability*100:.2f}%\n"
-    status_text += f"• Smart Mode: {'✅' if chat.smart_mode else '❌'}\n"
-    status_text += f"• Silent Mode: {'✅' if chat.is_silent else '❌'}\n"
-    
-    await callback.message.edit_text(
-        status_text,
-        parse_mode=None
-    )
+            lines.append(f"• {day['date']}: {day['count']} messages")
+
+    lines.append("\n⚙️ Chat Settings:")
+    lines.append(f"• Type: {chat.type}")
+    lines.append(f"• Probability: {chat.response_probability * 100:.2f}%")
+    lines.append(f"• Smart Mode: {'✅' if chat.smart_mode else '❌'}")
+    lines.append(f"• Silent Mode: {'✅' if chat.is_silent else '❌'}")
+
+    await callback.message.edit_text("\n".join(lines), parse_mode=None)
     await callback.answer()
 
+
+# ---------------------------------------------------------------------------
+# /shutdown
+# ---------------------------------------------------------------------------
+
+
 @router.message(Command("shutdown"))
-async def shutdown_command(message: Message, session: AsyncSession):
-    """Toggle global silent mode (sets all chats to silent mode)."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+async def shutdown_command(message: Message, session: AsyncSession) -> None:
+    """Toggle global silent mode (sets all chats to silent)."""
+    if not _is_owner_private(message):
         return
-    
+
     settings.is_shutdown = not settings.is_shutdown
-    
     if settings.is_shutdown:
-        # Set all chats to silent mode
-        chats = await session.execute(select(Chat))
-        chats = chats.scalars().all()
-        for chat in chats:
+        result = await session.execute(select(Chat))
+        for chat in result.scalars().all():
             chat.is_silent = True
         await session.commit()
-        
         await message.answer(
             "🔴 Global silent mode enabled\n"
             "ℹ️ All chats are now in silent mode (bot reads but doesn't respond)",
-            parse_mode=None
+            parse_mode=None,
         )
     else:
         await message.answer(
-            "🟢 Global silent mode disabled\n"
-            "ℹ️ Chats will return to their previous state",
-            parse_mode=None
+            "🟢 Global silent mode disabled\n" "ℹ️ Chats will return to their previous state",
+            parse_mode=None,
         )
 
-@router.message(Command("setmode"))
-async def setmode_command(message: Message, session: AsyncSession):
-    """Toggle silent mode in a chat."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    if not chats:
-        await message.answer("No chats found in database.")
-        return
-        
-    # Create keyboard with chat options
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{'🔇' if chat.is_silent else '🔊'} {chat.name}",
-                callback_data=f"toggle_silent_{chat.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer("Select a chat to toggle silent mode:", reply_markup=markup)
 
-@router.callback_query(lambda c: c.data.startswith("toggle_silent_"))
-async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession):
-    """Process silent mode toggle callback."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-    
-    chat_id = callback.data.split("_")[2]
-    
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback.answer("Chat not found in database.")
-        return
-        
-    # Toggle silent mode
-        chat.is_silent = not chat.is_silent
-        await session.commit()
-        
-    # Update keyboard
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    keyboard = []
-    for c in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{'🔇' if c.is_silent else '🔊'} {c.name}",
-                callback_data=f"toggle_silent_{c.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text(
-        "Select a chat to toggle silent mode:",
-        reply_markup=markup
-    )
-    
-    await callback.answer(f"Silent mode {'enabled' if chat.is_silent else 'disabled'} for {chat.name}")
+# ---------------------------------------------------------------------------
+# /setmode (silent toggle)
+# ---------------------------------------------------------------------------
 
-@router.message(Command("set_probability"))
-async def set_probability_command(message: Message, session: AsyncSession):
-    """Set response probability for a chat."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    if not chats:
-        await message.answer("No chats found in database.")
-        return
-        
-    # Create keyboard with chat selection
-    keyboard = []
-    for chat in chats:
-        keyboard.append([InlineKeyboardButton(
-            text=f"{chat.name} ({chat.response_probability:.2f})",
-            callback_data=f"sel|{chat.id}"
-        )])
-    
-    await message.answer(
-        "Select a chat to set response probability:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
 
-@router.callback_query(lambda c: c.data.startswith("sel|"))
-async def select_chat_for_probability(callback: CallbackQuery, state: FSMContext):
-    """Handle chat selection for probability setting."""
-    try:
-        # Разделяем по | вместо _
-        _, chat_id = callback.data.split("|")
-        async for session in get_session():
-    chat = await session.get(Chat, chat_id)
-    if chat:
-                await state.update_data(selected_chat_id=chat_id)
-        await callback.message.edit_text(
-                    f"Выбран чат: {chat.name}\nВыберите вероятность ответа:",
-                    reply_markup=create_probability_keyboard(chat_id)
-                )
-            else:
-                await callback.message.edit_text("❌ Чат не найден")
-    except Exception as e:
-        logger.error(f"Error in select_chat_for_probability: {e}")
-        await callback.message.edit_text("Произошла ошибка при выборе чата.")
-
-@router.callback_query(lambda c: c.data.startswith("prob|"))
-async def set_chat_probability(callback: CallbackQuery, state: FSMContext):
-    """Handle probability setting for selected chat."""
-    try:
-        # Разделяем по | вместо _
-        _, chat_id, prob = callback.data.split("|")
-        prob = float(prob)
-        
-        async for session in get_session():
-        chat = await session.get(Chat, chat_id)
-        if chat:
-                chat.response_probability = prob
-            await session.commit()
-                await callback.message.edit_text(
-                    f"✅ Вероятность ответа для чата {chat.name} установлена на {prob:.1f}"
-                )
-        else:
-                await callback.message.edit_text("❌ Чат не найден")
-    except Exception as e:
-        logger.error(f"Error in set_chat_probability: {e}")
-        await callback.message.edit_text("Произошла ошибка при установке вероятности.")
-
-@router.message(Command("set_importance"))
-async def set_importance_command(message: Message, session: AsyncSession):
-    """Set importance threshold for a chat."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    if not chats:
-        await message.answer("No chats found in database.")
-        return
-        
-    # Create keyboard with chat options
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{chat.name} ({chat.importance_threshold:.2f})",
-                callback_data=f"select_chat_imp_{chat.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer("Select a chat to set importance threshold:", reply_markup=markup)
-
-def create_importance_keyboard(chat_id: str) -> InlineKeyboardMarkup:
-    """Create keyboard for importance selection."""
-    keyboard = []
-    importance_values = [0.1, 0.3, 0.5, 0.7, 0.9]
-    for imp in importance_values:
-        # Используем более короткий формат callback-данных
-        callback_data = f"imp|{chat_id}|{imp}"
-        keyboard.append([InlineKeyboardButton(
-            text=f"{imp:.1f}",
-            callback_data=callback_data
-        )])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-@router.callback_query(lambda c: c.data.startswith("select_chat_imp_"))
-async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSession):
-    """Process chat selection for importance setting."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-    
-    chat_id = callback.data.split("_")[3]
-    
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback.answer("Chat not found in database.")
-        return
-    
-    await callback.message.edit_text(
-        f"Select importance threshold for {chat.name}:",
-        reply_markup=create_importance_keyboard(chat_id)
-    )
-
-@router.callback_query(lambda c: c.data.startswith("imp|"))
-async def set_chat_importance(callback: CallbackQuery, session: AsyncSession):
-    """Process importance setting callback."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-    
-    # Разделяем по | вместо _
-    _, chat_id, imp = callback.data.split("|")
-    imp = float(imp)
-    
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback.answer("Chat not found in database.")
-        return
-        
-    # Update importance threshold
-    chat.importance_threshold = imp
-        await session.commit()
-        
-        await callback.message.edit_text(
-        f"Importance threshold set to {imp:.2f} for {chat.name}"
-        )
-    await callback.answer("Importance threshold updated")
-
-@router.callback_query(lambda c: c.data.startswith("custom_imp_"))
-async def custom_importance(callback: CallbackQuery, state: FSMContext):
-    """Handle custom importance input."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("You are not authorized to use this command.")
-        return
-    
-    chat_id = callback.data.split("_")[2]
-    await state.set_state(TestStates.waiting_for_importance)
-    await state.update_data(chat_id=chat_id)
-    
-    await callback.message.edit_text(
-        "Enter custom importance threshold (0.0 to 1.0):"
-    )
-
-@router.message(TestStates.waiting_for_importance)
-async def process_custom_importance(message: Message, state: FSMContext, session: AsyncSession):
-    """Process custom importance input."""
-    if message.from_user.id != settings.OWNER_ID:
-        await message.answer("You are not authorized to use this command.")
-        return
-    
-    try:
-        imp = float(message.text)
-        if not 0 <= imp <= 1:
-            raise ValueError("Importance threshold must be between 0 and 1")
-            
-        data = await state.get_data()
-        chat_id = data["chat_id"]
-        
-        # Get chat from database
-        result = await session.execute(select(Chat).where(Chat.id == chat_id))
-        chat = result.scalar_one_or_none()
-        
-        if not chat:
-            await message.answer("Chat not found in database.")
-            return
-            
-        # Update importance threshold
-        chat.importance_threshold = imp
-            await session.commit()
-    
-        await message.answer(f"Importance threshold set to {imp:.2f} for {chat.name}")
-    except ValueError:
-        await message.answer("Please enter a valid number between 0 and 1.")
-    finally:
-    await state.clear()
-
-@router.message(Command("smart_mode"))
-async def smart_mode_command(message: Message, session: AsyncSession):
-    """Toggle smart mode in a chat."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    if not chats:
-        await message.answer("No chats found in database.")
-        return
-        
-    # Create keyboard with chat options
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{'🤖' if chat.smart_mode else '💭'} {chat.name}",
-                callback_data=f"smart_mode_{chat.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer("Select a chat to toggle smart mode:", reply_markup=markup)
-
-@router.callback_query(lambda c: c.data.startswith("smart_mode_"))
-async def process_smart_mode_callback(callback_query: CallbackQuery, session: AsyncSession):
-    """Process smart mode toggle callback."""
-    if callback_query.from_user.id != settings.OWNER_ID:
-        await callback_query.answer("You are not authorized to use this command.")
-        return
-    
-    chat_id = callback_query.data.split("_")[2]
-    
-    # Get chat from database
-    result = await session.execute(select(Chat).where(Chat.id == chat_id))
-    chat = result.scalar_one_or_none()
-    
-    if not chat:
-        await callback_query.answer("Chat not found in database.")
-        return
-    
-    # Toggle smart mode
-    chat.smart_mode = not chat.smart_mode
-    await session.commit()
-    
-    # Update keyboard
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
-    keyboard = []
-    for c in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{'🤖' if c.smart_mode else '💭'} {c.name}",
-                callback_data=f"smart_mode_{c.id}"
-            )
-        ])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback_query.message.edit_text(
-        "Select a chat to toggle smart mode:",
-        reply_markup=markup
-    )
-    
-    await callback_query.answer(f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {chat.name}")
-
-@router.message(Command("list_chats"))
-async def list_chats_command(message: Message, session: AsyncSession):
-    """List all chats with their settings."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    await process_list_chats(message, session)
-
-@router.message(Command("summ"))
-async def summarize_chat_command(message: Message, session: AsyncSession):
-    """Generate chat summary."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.id, session)
-    
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"📊 {chat.name}",
-                callback_data=f"summ_chat_{chat.id}"
-            )
-        ])
-    
-    await message.answer(
-        "Select chat to generate summary:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
-@router.callback_query(lambda c: c.data.startswith("summ_chat_"))
-async def select_summary_period(callback: CallbackQuery, session: AsyncSession):
-    """Select summary period."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can generate summaries", show_alert=True)
-        return
-    
-    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
-    chat = await session.get(Chat, chat_id)
-    
-    if not chat:
-        await callback.answer("Chat not found", show_alert=True)
-        return
-    
-    # Create period selection keyboard
+def _silent_keyboard(chats: List[Chat]) -> InlineKeyboardMarkup:
     keyboard = [
         [
             InlineKeyboardButton(
-                text="🔄 Since last summary",
-                callback_data=f"summ_period_{chat_id}_last"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📅 Last 24 hours",
-                callback_data=f"summ_period_{chat_id}_24h"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="⏰ Custom hours",
-                callback_data=f"summ_period_{chat_id}_custom"
+                text=f"{'🔇' if chat.is_silent else '🔊'} {_format_chat_name(chat)}",
+                callback_data=f"silent|{chat.id}",
             )
         ]
+        for chat in chats
     ]
-    
-    await callback.message.edit_text(
-        f"Select summary period for {chat.name}:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@router.message(Command("setmode"))
+async def setmode_command(message: Message, session: AsyncSession) -> None:
+    """Toggle silent mode in a chat."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    await message.answer(
+        "Select a chat to toggle silent mode:",
+        reply_markup=_silent_keyboard(chats),
     )
 
-@router.callback_query(lambda c: c.data.startswith("summ_period_"))
-async def generate_summary(callback: CallbackQuery, session: AsyncSession):
-    """Generate summary for selected period."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can generate summaries", show_alert=True)
-        return
-    
-    try:
-        # Разделяем по _ вместо |
-    _, _, chat_id, period_type = callback.data.split("_")
-    chat = await session.get(Chat, chat_id)
-    
-    if not chat:
-            await callback.message.edit_text("❌ Чат не найден")
-        return
-    
-        # Определяем временной диапазон
-        now = datetime.now(timezone.utc)
-    if period_type == "last":
-        # Use last summary timestamp if available, otherwise use 24h
-        start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
-            if start_time and not start_time.tzinfo:
-                start_time = start_time.replace(tzinfo=timezone.utc)
-    elif period_type == "24h":
-        start_time = now - timedelta(days=1)
-    elif period_type == "custom":
-        # Store chat_id in state for custom hours input
-        await callback.message.edit_text(
-                "Enter number of hours to summarize:",
-            reply_markup=None
-        )
-        return
-        else:
-            await callback.message.edit_text("❌ Неверный период")
-        return
-    
-        # Получаем сообщения за указанный период
-        messages_query = (
-            select(DBMessage)
-            .where(DBMessage.chat_id == chat.id)
-            .where(DBMessage.created_at >= start_time)
-            .order_by(DBMessage.created_at)
-        )
-        result = await session.execute(messages_query)
-        messages = result.scalars().all()
-    
-    if not messages:
-            await callback.message.edit_text(f"❌ Нет сообщений за выбранный период")
-        return
-    
-        # Подсчет статистики по словам
-        word_counts = Counter()
-        emoji_counts = Counter()
-        total_length = 0
-        message_times = []
-        
-        # Список стоп-слов русского языка (предлоги, союзы, частицы)
-        stop_words = {
-            # Предлоги
-            'в', 'во', 'не', 'что', 'он', 'на', 'я', 'с', 'со', 'как', 'а', 'то', 'все', 'она',
-            'так', 'его', 'но', 'да', 'ты', 'к', 'у', 'же', 'вы', 'за', 'бы', 'по', 'только', 'ее',
-            'мне', 'было', 'вот', 'от', 'меня', 'еще', 'нет', 'о', 'из', 'ему', 'теперь', 'когда',
-            'даже', 'ну', 'вдруг', 'ли', 'если', 'уже', 'или', 'ни', 'быть', 'был', 'него', 'чего',
-            'при', 'на', 'об', 'но', 'он', 'она', 'оно', 'они', 'этот', 'тот', 'такой', 'такая',
-            'такое', 'такие', 'каждый', 'каждая', 'каждое', 'каждые', 'мой', 'моя', 'мое', 'мои',
-            'твой', 'твоя', 'твое', 'твои', 'наш', 'наша', 'наше', 'наши', 'ваш', 'ваша', 'ваше',
-            'ваши', 'их', 'его', 'ее', 'их',
-            # Союзы
-            'и', 'а', 'но', 'или', 'что', 'чтобы', 'как', 'будто', 'словно', 'точно', 'если',
-            'раз', 'коль', 'коли', 'хотя', 'пусть', 'пускай', 'дабы', 'ибо', 'так как', 'поскольку',
-            'затем что', 'оттого что', 'потому что', 'притом', 'причем', 'не только', 'но и',
-            'не столько', 'сколько', 'не то чтобы', 'а', 'не то', 'а то', 'не то', 'а не то',
-            # Частицы
-            'бы', 'б', 'ли', 'ль', 'не', 'ни', 'как', 'ведь', 'вон', 'вот', 'дескать', 'де',
-            'дека', 'мол', 'нехай', 'пусть', 'пускай', 'разве', 'ровно', 'словно', 'точно',
-            'ужели', 'ужель', 'частицы', 'да', 'давай', 'давайте', 'даже', 'еще', 'именно',
-            'как раз', 'только', 'только что', 'уже', 'хотя', 'хотя бы', 'чуть', 'чуть ли',
-            'чуть не', 'чуть было', 'не', 'неужели', 'неужель', 'разве', 'разве что', 'едва',
-            'едва ли', 'едва не', 'едва только', 'лишь', 'лишь только', 'лишь бы', 'хоть',
-            'хотя бы', 'хоть бы', 'хотя', 'хотя бы', 'хотя', 'хотя бы', 'хотя', 'хотя бы'
-        }
-        
-        for msg in messages:
-            # Подсчет слов (исключая только стоп-слова)
-            words = [word.lower() for word in re.findall(r'\b\w+\b', msg.text) 
-                    if word.lower() not in stop_words]
-            word_counts.update(words)
-            total_length += len(msg.text)
-            
-            # Подсчет эмодзи
-            emojis = re.findall(r'[\U0001F300-\U0001F9FF]', msg.text)
-            emoji_counts.update(emojis)
-            
-            message_times.append(msg.created_at)
 
-        # Генерируем контекст для суммаризации
-    context_service = ContextService(session)
-        context = await context_service.get_context_for_summary(chat.id)
-        
-        # Форматируем сообщения для суммаризации
-        formatted_messages = []
-        for msg in messages:
-            if msg.text:  # Changed from msg.content to msg.text
-                formatted_messages.append({
-                    'text': msg.text,  # Changed from msg.content to msg.text
-                    'user_id': msg.user_id,
-                    'created_at': msg.created_at
-                })
-        
-        # Обновляем timestamp последней суммаризации
-        chat.last_summary_timestamp = now.replace(tzinfo=None)  # Convert to naive datetime
+@router.callback_query(F.data.startswith("silent|"))
+async def process_toggle_silent(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Process silent mode toggle."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    chat.is_silent = not chat.is_silent
     await session.commit()
-    
-        # Отправляем суммаризацию
-        await callback.message.edit_text(
-            f"📊 Суммаризация для {chat.name}:\n\n{context}"
-        )
-    except Exception as e:
-        logger.error(f"Error in generate_summary: {e}")
-        await callback.message.edit_text("Произошла ошибка при генерации суммаризации.")
 
-@router.message(TestStates.waiting_for_hours)
-async def process_custom_hours(message: Message, state: FSMContext, session: AsyncSession):
-    """Process custom hours input for summary."""
-    if message.from_user.id != settings.OWNER_ID:
+    chats = await _get_all_chats(session)
+    await callback.message.edit_text(
+        "Select a chat to toggle silent mode:",
+        reply_markup=_silent_keyboard(chats),
+    )
+    await callback.answer(
+        f"Silent mode {'enabled' if chat.is_silent else 'disabled'} for {_format_chat_name(chat)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /set_probability
+# ---------------------------------------------------------------------------
+
+
+def _probability_keyboard(chat_id: UUID) -> InlineKeyboardMarkup:
+    values = [0.0, 0.25, 0.5, 0.75, 1.0]
+    keyboard = [
+        [InlineKeyboardButton(text=f"{int(v * 100)}%", callback_data=f"prob|{chat_id}|{v}")]
+        for v in values
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@router.message(Command("set_probability"))
+async def set_probability_command(message: Message, session: AsyncSession) -> None:
+    """Set response probability for a chat."""
+    if not _is_owner_private(message):
         return
-    
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=f"{_format_chat_name(c)} ({c.response_probability:.2f})",
+                callback_data=f"sel|{c.id}",
+            )
+        ]
+        for c in chats
+    ]
+    await message.answer(
+        "Select a chat to set response probability:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+
+
+@router.callback_query(F.data.startswith("sel|"))
+async def select_chat_for_probability(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Show probability options for the selected chat."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.message.edit_text("❌ Чат не найден")
+        return
+
+    await callback.message.edit_text(
+        f"Выбран чат: {_format_chat_name(chat)}\nВыберите вероятность ответа:",
+        reply_markup=_probability_keyboard(chat.id),
+    )
+
+
+@router.callback_query(F.data.startswith("prob|"))
+async def set_chat_probability(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Apply selected probability."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
     try:
-        hours = float(message.text)
-        if hours <= 0:
-            await message.answer("❌ Hours must be positive")
-            await state.clear()
-            return
-            
-        data = await state.get_data()
-        chat_id = data.get("chat_id")
-        
-        chat = await session.get(Chat, chat_id)
-        if not chat:
-            await message.answer("❌ Chat not found")
-            await state.clear()
-            return
-        
-        # Update chat title
-        await update_chat_title(message, chat_id, session)
-        
-        # Get messages for specified hours
-        start_time = datetime.now() - timedelta(hours=hours)
-        messages = await session.execute(
-            select(DBMessage)
-            .where(DBMessage.chat_id == chat_id)
-            .where(DBMessage.timestamp >= start_time)
-            .order_by(DBMessage.timestamp)
-        )
-        messages = messages.scalars().all()
-        
-        if not messages:
-            await message.answer("❌ No messages found for selected period")
-            await state.clear()
-            return
-        
-        # Generate summary
-        context_service = ContextService(session)
-        summary = await context_service.generate_chat_summary(messages)
-        
-        # Update last summary timestamp
-        chat.last_summary_timestamp = datetime.now()
-        await session.commit()
-        
-        await message.answer(f"Summary for {chat.name} (last {hours:.1f} hours):\n\n{summary}")
+        _, chat_id, raw_prob = callback.data.split("|", 2)
+        prob = float(raw_prob)
+    except (ValueError, IndexError):
+        await callback.message.edit_text("❌ Неверный формат")
+        return
+
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.message.edit_text("❌ Чат не найден")
+        return
+
+    chat.response_probability = max(0.0, min(1.0, prob))
+    await session.commit()
+    await callback.message.edit_text(
+        f"✅ Вероятность ответа для чата {_format_chat_name(chat)} установлена на {prob:.2f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /set_importance
+# ---------------------------------------------------------------------------
+
+
+def _importance_keyboard(chat_id: UUID) -> InlineKeyboardMarkup:
+    values = [0.1, 0.3, 0.5, 0.7, 0.9]
+    keyboard = [
+        [InlineKeyboardButton(text=f"{v:.1f}", callback_data=f"imp|{chat_id}|{v}")] for v in values
+    ]
+    keyboard.append([InlineKeyboardButton(text="✏️ Custom", callback_data=f"impc|{chat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@router.message(Command("set_importance"))
+async def set_importance_command(message: Message, session: AsyncSession) -> None:
+    """Set importance threshold for a chat."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text=f"{_format_chat_name(c)} ({c.importance_threshold:.2f})",
+                callback_data=f"impsel|{c.id}",
+            )
+        ]
+        for c in chats
+    ]
+    await message.answer(
+        "Select a chat to set importance threshold:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+
+
+@router.callback_query(F.data.startswith("impsel|"))
+async def select_chat_for_importance(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Show importance options for the selected chat."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"Select importance threshold for {_format_chat_name(chat)}:",
+        reply_markup=_importance_keyboard(chat.id),
+    )
+
+
+@router.callback_query(F.data.startswith("imp|"))
+async def set_chat_importance(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Apply selected importance threshold."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, chat_id, raw_imp = callback.data.split("|", 2)
+        imp = float(raw_imp)
+    except (ValueError, IndexError):
+        await callback.message.edit_text("❌ Неверный формат")
+        return
+
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    chat.importance_threshold = max(0.0, min(1.0, imp))
+    await session.commit()
+    await callback.message.edit_text(
+        f"Importance threshold set to {imp:.2f} for {_format_chat_name(chat)}"
+    )
+    await callback.answer("Importance threshold updated")
+
+
+@router.callback_query(F.data.startswith("impc|"))
+async def custom_importance(callback: CallbackQuery, state: FSMContext) -> None:
+    """Ask for a free-form importance value."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    await state.set_state(TestStates.waiting_for_importance)
+    await state.update_data(chat_id=chat_id)
+    await callback.message.edit_text("Enter custom importance threshold (0.0 to 1.0):")
+
+
+@router.message(TestStates.waiting_for_importance)
+async def process_custom_importance(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Apply free-form importance value."""
+    if not _is_owner_private(message):
+        return
+
+    try:
+        imp = float(message.text or "")
+        if not 0.0 <= imp <= 1.0:
+            raise ValueError
     except ValueError:
-        await message.answer("❌ Please enter a valid number")
-    
+        await message.answer("Please enter a valid number between 0 and 1.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    chat_id = data.get("chat_id")
+    chat = await _get_chat(session, chat_id) if chat_id else None
+    if chat is None:
+        await message.answer("Chat not found in database.")
+        await state.clear()
+        return
+
+    chat.importance_threshold = imp
+    await session.commit()
+    await message.answer(f"Importance threshold set to {imp:.2f} for {_format_chat_name(chat)}")
     await state.clear()
 
-@router.message(Command("upload"))
-async def upload_command(message: Message, session: AsyncSession):
-    """Handle chat dump upload for style training."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Create keyboard for chat type selection
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+
+# ---------------------------------------------------------------------------
+# /smart_mode
+# ---------------------------------------------------------------------------
+
+
+def _smart_keyboard(chats: List[Chat]) -> InlineKeyboardMarkup:
+    keyboard = [
         [
-            InlineKeyboardButton(text="👔 Рабочий", callback_data="upload_work"),
-            InlineKeyboardButton(text="😊 Дружеский", callback_data="upload_friendly")
-        ],
-        [
-            InlineKeyboardButton(text="🔄 Смешанный", callback_data="upload_mixed")
+            InlineKeyboardButton(
+                text=f"{'🤖' if c.smart_mode else '💭'} {_format_chat_name(c)}",
+                callback_data=f"smart|{c.id}",
+            )
         ]
-    ])
-    
+        for c in chats
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+@router.message(Command("smart_mode"))
+async def smart_mode_command(message: Message, session: AsyncSession) -> None:
+    """Toggle smart mode."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
     await message.answer(
-        "📝 Загрузите дамп переписки одним из способов:\n\n"
-        "1️⃣ Отправьте текстовое сообщение в формате:\n"
-        "[Дата] Имя пользователя: Сообщение\n"
-        "[Дата] Имя пользователя: Сообщение\n\n"
-        "2️⃣ Отправьте файл:\n"
-        "- Текстовый файл (.txt) с дампом переписки\n"
-        "- JSON-файл с экспортом переписки из Telegram\n\n"
-        "Пример текстового формата:\n"
-        "[2024-01-15 14:30] Valentin: Привет, как дела?\n"
-        "[2024-01-15 14:31] John: Все хорошо, спасибо!\n\n"
-        "Выберите тип переписки:",
-        reply_markup=keyboard
+        "Select a chat to toggle smart mode:",
+        reply_markup=_smart_keyboard(chats),
     )
 
-@router.callback_query(lambda c: c.data.startswith("upload_"))
-async def process_upload_type(callback: CallbackQuery, state: FSMContext):
+
+@router.callback_query(F.data.startswith("smart|"))
+async def process_smart_mode_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Toggle smart mode for the selected chat."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    chat.smart_mode = not chat.smart_mode
+    await session.commit()
+
+    chats = await _get_all_chats(session)
+    await callback.message.edit_text(
+        "Select a chat to toggle smart mode:",
+        reply_markup=_smart_keyboard(chats),
+    )
+    await callback.answer(
+        f"Smart mode {'enabled' if chat.smart_mode else 'disabled'} for {_format_chat_name(chat)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# /list_chats
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("list_chats"))
+async def list_chats_command(message: Message, session: AsyncSession) -> None:
+    """List all chats with their settings."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    text_parts = ["📊 Chat Settings:\n"]
+    for chat in chats:
+        text_parts.append(f"Chat: {_format_chat_name(chat)}")
+        text_parts.append(f"Type: {chat.type}")
+        text_parts.append(f"Silent Mode: {'🔇' if chat.is_silent else '🔊'}")
+        text_parts.append(f"Smart Mode: {'🤖' if chat.smart_mode else '💭'}")
+        text_parts.append(f"Response Probability: {chat.response_probability:.2f}")
+        text_parts.append(f"Importance Threshold: {chat.importance_threshold:.2f}")
+        if chat.created_at:
+            text_parts.append(f"Created: {chat.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        if chat.updated_at:
+            text_parts.append(f"Updated: {chat.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        text_parts.append("")
+
+    await message.answer("\n".join(text_parts))
+
+
+# ---------------------------------------------------------------------------
+# /summ — chat summary
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("summ"))
+async def summarize_chat_command(message: Message, session: AsyncSession) -> None:
+    """Generate chat summary."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    for chat in chats:
+        await update_chat_title(message, chat.id, session)
+
+    await message.answer(
+        "Select chat to generate summary:",
+        reply_markup=_chat_keyboard(chats, prefix="summchat"),
+    )
+
+
+@router.callback_query(F.data.startswith("summchat|"))
+async def select_summary_period(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Pick a period for the summary."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text="🔄 Since last summary", callback_data=f"summp|{chat.id}|last")],
+        [InlineKeyboardButton(text="📅 Last 24 hours", callback_data=f"summp|{chat.id}|24h")],
+        [InlineKeyboardButton(text="⏰ Custom hours", callback_data=f"summp|{chat.id}|custom")],
+    ]
+    await callback.message.edit_text(
+        f"Select summary period for {_format_chat_name(chat)}:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+    )
+
+
+@router.callback_query(F.data.startswith("summp|"))
+async def generate_summary(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Generate summary for the selected period."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    try:
+        _, chat_id, period = callback.data.split("|", 2)
+    except ValueError:
+        await callback.message.edit_text("❌ Неверный период")
+        return
+
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.message.edit_text("❌ Чат не найден")
+        return
+
+    now = datetime.now(timezone.utc)
+    if period == "last":
+        start_time = chat.last_summary_timestamp or (now - timedelta(days=1))
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+    elif period == "24h":
+        start_time = now - timedelta(days=1)
+    elif period == "custom":
+        await state.set_state(TestStates.waiting_for_hours)
+        await state.update_data(chat_id=str(chat.id))
+        await callback.message.edit_text("Enter number of hours to summarize:", reply_markup=None)
+        return
+    else:
+        await callback.message.edit_text("❌ Неверный период")
+        return
+
+    await _send_summary(callback.message, chat, start_time, session)
+
+
+@router.message(TestStates.waiting_for_hours)
+async def process_custom_hours(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Apply custom hours for summary."""
+    if not _is_owner_private(message):
+        return
+
+    try:
+        hours = float(message.text or "")
+        if hours <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Please enter a valid positive number")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    chat = await _get_chat(session, data.get("chat_id"))
+    await state.clear()
+
+    if chat is None:
+        await message.answer("❌ Chat not found")
+        return
+
+    start_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+    await _send_summary(message, chat, start_time, session)
+
+
+async def _send_summary(
+    sink: Message,
+    chat: Chat,
+    start_time: datetime,
+    session: AsyncSession,
+) -> None:
+    result = await session.execute(
+        select(DBMessage)
+        .where(DBMessage.chat_id == chat.id, DBMessage.created_at >= start_time)
+        .order_by(DBMessage.created_at)
+    )
+    messages = list(result.scalars().all())
+    if not messages:
+        await sink.answer("❌ Нет сообщений за выбранный период")
+        return
+
+    summary = await ContextService(session).generate_chat_summary(messages)
+    chat.last_summary_timestamp = datetime.now(timezone.utc)
+    await session.commit()
+    await sink.answer(f"📊 Суммаризация для {_format_chat_name(chat)}:\n\n{summary}")
+
+
+# ---------------------------------------------------------------------------
+# /upload — chat dump
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("upload"))
+async def upload_command(message: Message, session: AsyncSession) -> None:
+    """Handle chat dump upload for style training."""
+    if not _is_owner_private(message):
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👔 Рабочий", callback_data="upload|work"),
+                InlineKeyboardButton(text="😊 Дружеский", callback_data="upload|friendly"),
+            ],
+            [InlineKeyboardButton(text="🔄 Смешанный", callback_data="upload|mixed")],
+        ]
+    )
+    await message.answer(
+        "📝 Загрузите дамп переписки одним из способов:\n\n"
+        "1️⃣ Текстовое сообщение в формате:\n"
+        "[Дата] Имя пользователя: Сообщение\n\n"
+        "2️⃣ Файл (.txt или JSON-экспорт Telegram).\n\n"
+        "Выберите тип переписки:",
+        reply_markup=keyboard,
+    )
+
+
+@router.callback_query(F.data.startswith("upload|"))
+async def process_upload_type(callback: CallbackQuery, state: FSMContext) -> None:
     """Process chat type selection for upload."""
-    chat_type = callback.data.split("_")[1]
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_type = callback.data.split("|", 1)
+    if chat_type not in {"work", "friendly", "mixed"}:
+        await callback.message.edit_text("❌ Неверный тип чата")
+        return
+
     await state.update_data(chat_type=chat_type)
     await state.set_state(UploadState.waiting_for_dump)
     await callback.message.edit_text(
         "📤 Теперь отправьте дамп переписки текстовым сообщением или файлом.\n"
-        "Поддерживаемые форматы: .txt, .json\n"
-        "Убедитесь, что формат соответствует примеру."
+        "Поддерживаемые форматы: .txt, .json"
     )
+
 
 @router.message(UploadState.waiting_for_dump)
-async def process_dump_upload(message: Message, state: FSMContext, session: AsyncSession):
+async def process_dump_upload(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
     """Process chat dump upload and update style."""
+    if not _is_owner_private(message):
+        return
+
     data = await state.get_data()
     chat_type = data.get("chat_type")
-    
-    try:
-        # Get text content from message or file
-        if message.document:
-            # Download file
-            file = await message.bot.get_file(message.document.file_id)
-            file_path = await message.bot.download_file(file.file_path)
-            file_content = file_path.read().decode('utf-8')
-            
-            if message.document.mime_type == "application/json":
-                # Parse JSON
-                import json
-                json_data = json.loads(file_content)
-                conversation_text = []
-                
-                # Handle different JSON formats
-                if isinstance(json_data, list):
-                    # Telegram export format
-                    for msg in json_data:
-                        if 'text' in msg and 'from' in msg:
-                            username = msg['from'].get('first_name', 'Unknown')
-                            if username.lower() == message.from_user.first_name.lower():
-                                username = "Valentin"
-                            conversation_text.append(f"{username}: {msg['text']}")
-                else:
-                    # Custom JSON format
-                    for msg in json_data.get('messages', []):
-                        if 'text' in msg and 'from' in msg:
-                            username = msg['from'].get('name', 'Unknown')
-                            if username.lower() == message.from_user.first_name.lower():
-                                username = "Valentin"
-                            conversation_text.append(f"{username}: {msg['text']}")
-                
-                text_content = "\n".join(conversation_text)
-            else:
-                # Text file
-                text_content = file_content
-        else:
-            # Text message
-            text_content = message.text
-        
-        if not text_content:
-            await message.answer("❌ Не удалось получить содержимое дампа. Проверьте формат.")
-            return
-        
-        # Parse the dump
-        lines = text_content.split("\n")
-        conversation_text = []
-        
-        for line in lines:
-            if not line.strip():
-                continue
-                
-            # Extract message content
-            match = re.match(r'\[(.*?)\] (.*?): (.*)', line)
-            if match:
-                timestamp, username, text = match.groups()
-                # Replace owner's name with "Valentin" for consistency
-                if username.lower() == message.from_user.first_name.lower():
-                    username = "Valentin"
-                conversation_text.append(f"{username}: {text}")
-            else:
-                # Handle non-formatted lines (from JSON)
-                conversation_text.append(line)
-        
-        if not conversation_text:
-            await message.answer("❌ Не удалось извлечь сообщения из дампа. Проверьте формат.")
-            return
-        
-        # Format for training
-        formatted_text = "\n".join(conversation_text)
-        
-        # Update style
-        openai_service = OpenAIService()
-        new_style = await openai_service.refresh_style(formatted_text, chat_type=chat_type)
-        
-        await message.answer(
-            f"✅ Стиль успешно обновлен для типа '{chat_type}':\n\n"
-            f"{new_style}"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error processing dump: {e}", exc_info=True)
-        await message.answer(
-            "❌ Произошла ошибка при обработке дампа. "
-            "Проверьте формат и попробуйте снова."
-        )
-    
     await state.clear()
 
-@router.message(Command("refresh"))
-async def refresh_command(message: Message, session: AsyncSession):
-    """Refresh style for chat type."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if chat_type not in {"work", "friendly", "mixed"}:
+        await message.answer("❌ Тип чата не выбран. Запустите /upload заново.")
         return
-    
-    try:
-        # Create keyboard with chat type options
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    text="💼 Work",
-                    callback_data="refresh_type_work"
-                ),
-                InlineKeyboardButton(
-                    text="😊 Friendly",
-                    callback_data="refresh_type_friendly"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🤝 Mixed",
-                    callback_data="refresh_type_mixed"
-                )
-            ]
-        ]
-        
-        await message.reply(
-            "Select chat type to refresh style profile:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in refresh command: {e}")
-        await message.reply("Sorry, I couldn't process your request. Please try again later.")
 
-@router.callback_query(lambda c: c.data.startswith("refresh_type_"))
-async def select_refresh_type(callback: CallbackQuery, session: AsyncSession):
-    """Handle chat type selection for refresh."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can refresh style profiles", show_alert=True)
-        return
-        
     try:
-        # Get chat type from callback data
-        chat_type = callback.data.split("_")[2]
-        
-        # Create keyboard with message count options
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    text="📊 Last 100 messages",
-                    callback_data=f"refresh_count_{chat_type}_100"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📊 Last 200 messages",
-                    callback_data=f"refresh_count_{chat_type}_200"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📊 Last 500 messages",
-                    callback_data=f"refresh_count_{chat_type}_500"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📊 All messages (last week)",
-                    callback_data=f"refresh_count_{chat_type}_week"
-                )
-            ]
-        ]
-        
-        await callback.message.edit_text(
-            f"Select how many messages to analyze for {chat_type} style profile:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in select_refresh_type: {e}")
-        await callback.message.edit_text("Sorry, I couldn't process your request. Please try again later.")
-
-@router.message(Command("test"))
-async def test_command(message: Message, session: AsyncSession):
-    """Test bot functionality in a specific chat."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+        text_content = await _read_dump(message)
+    except Exception as exc:  # noqa: BLE001 — пользовательский ввод
+        logger.error("Error reading dump: %s", exc, exc_info=True)
+        await message.answer("❌ Не удалось прочитать дамп. Проверьте формат.")
         return
-    
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    # Update chat titles
-    for chat in chats:
-        await update_chat_title(message, chat.id, session)
-    
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"📱 {chat.name}",
-                callback_data=f"test_chat_{chat.id}"
+
+    if not text_content:
+        await message.answer("❌ Не удалось получить содержимое дампа. Проверьте формат.")
+        return
+
+    parsed = _parse_dump(text_content, message.from_user.first_name if message.from_user else None)
+    if not parsed:
+        await message.answer("❌ Не удалось извлечь сообщения из дампа. Проверьте формат.")
+        return
+
+    try:
+        new_style = await OpenAIService()._generate_style_guide(parsed, chat_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error generating style: %s", exc, exc_info=True)
+        await message.answer("❌ Произошла ошибка при обработке дампа.")
+        return
+
+    style_result = await session.execute(
+        select(Style).where(Style.chat_type == ChatType(chat_type))
+    )
+    style = style_result.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if style:
+        style.prompt_template = new_style
+        style.last_updated = now
+    else:
+        session.add(
+            Style(
+                chat_type=ChatType(chat_type),
+                prompt_template=new_style,
+                last_updated=now,
             )
-        ])
-    
-    await message.answer(
-        "Select chat to test bot functionality:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+    await session.commit()
+    await message.answer(f"✅ Стиль успешно обновлен для типа '{chat_type}':\n\n{new_style}")
+
+
+async def _read_dump(message: Message) -> str:
+    """Extract a UTF-8 string from either a document or message text."""
+    if message.document is None:
+        return message.text or ""
+
+    file = await message.bot.get_file(message.document.file_id)
+    buf = await message.bot.download_file(file.file_path)
+    raw = buf.read().decode("utf-8")
+
+    if message.document.mime_type == "application/json":
+        return _json_dump_to_text(
+            raw, owner_name=(message.from_user.first_name if message.from_user else None)
+        )
+    return raw
+
+
+def _json_dump_to_text(raw: str, owner_name: Optional[str]) -> str:
+    """Normalise a Telegram JSON export to ``Name: text`` lines."""
+    data = json.loads(raw)
+    msgs = data if isinstance(data, list) else data.get("messages", [])
+    lines: List[str] = []
+    owner_low = (owner_name or "").lower()
+    for msg in msgs:
+        text = msg.get("text") if isinstance(msg, dict) else None
+        sender = msg.get("from") if isinstance(msg, dict) else None
+        if not text or not sender:
+            continue
+        if isinstance(sender, dict):
+            name = sender.get("first_name") or sender.get("name") or "Unknown"
+        else:
+            name = str(sender)
+        if owner_low and name.lower() == owner_low:
+            name = "Valentin"
+        if isinstance(text, list):
+            text = "".join(part if isinstance(part, str) else part.get("text", "") for part in text)
+        lines.append(f"{name}: {text}")
+    return "\n".join(lines)
+
+
+def _parse_dump(text: str, owner_name: Optional[str]) -> List[str]:
+    """Parse a ``[Date] Name: Text`` dump into a list of normalised messages."""
+    parsed: List[str] = []
+    owner_low = (owner_name or "").lower()
+    pattern = re.compile(r"\[(.*?)\]\s*(.*?):\s*(.*)")
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = pattern.match(line)
+        if match:
+            _, name, body = match.groups()
+            if owner_low and name.lower() == owner_low:
+                name = "Valentin"
+            parsed.append(f"{name}: {body}")
+        else:
+            parsed.append(line.strip())
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# /refresh — rebuild style profile from history
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("refresh"))
+async def refresh_command(message: Message, session: AsyncSession) -> None:
+    """Refresh style for chat type."""
+    if not _is_owner_private(message):
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💼 Work", callback_data="reftype|work"),
+                InlineKeyboardButton(text="😊 Friendly", callback_data="reftype|friendly"),
+            ],
+            [InlineKeyboardButton(text="🤝 Mixed", callback_data="reftype|mixed")],
+        ]
+    )
+    await message.reply("Select chat type to refresh style profile:", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("reftype|"))
+async def select_refresh_type(callback: CallbackQuery) -> None:
+    """Pick how many messages to analyse."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_type = callback.data.split("|", 1)
+    if chat_type not in {"work", "friendly", "mixed"}:
+        await callback.message.edit_text("❌ Неверный тип")
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 100 messages", callback_data=f"refcnt|{chat_type}|100"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 200 messages", callback_data=f"refcnt|{chat_type}|200"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Last 500 messages", callback_data=f"refcnt|{chat_type}|500"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 All messages (last week)", callback_data=f"refcnt|{chat_type}|week"
+                )
+            ],
+        ]
+    )
+    await callback.message.edit_text(
+        f"Select how many messages to analyze for {chat_type} style profile:",
+        reply_markup=keyboard,
     )
 
-@router.callback_query(lambda c: c.data.startswith("test_chat_"))
-async def process_test_chat(callback: CallbackQuery, session: AsyncSession):
-    """Process test chat selection."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can test bot functionality", show_alert=True)
+
+@router.callback_query(F.data.startswith("refcnt|"))
+async def refresh_style_with_count(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Run style refresh with the chosen scope."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
         return
-    
-    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
-    chat = await session.get(Chat, chat_id)
-    
-    if chat:
-        # Get chat info from Telegram
-        try:
-            chat_info = await callback.bot.get_chat(chat_id)
-            title = chat_info.title
-        except Exception as e:
-            logger.error(f"Failed to get chat info: {e}", exc_info=True)
-            title = chat.name or "Unknown Chat"
-        
-        # Update chat title if needed
-        if title != chat.name:
-            chat.name = title
-            await session.commit()
-        
-        # Send test message
-        await callback.bot.send_message(
-            chat_id=chat_id,
-            text="🤖 Test message from bot"
-        )
-        
-        await callback.answer(f"Test message sent to {chat.name}")
-    else:
+
+    try:
+        _, chat_type, count = callback.data.split("|", 2)
+    except ValueError:
+        await callback.message.edit_text("❌ Неверный формат")
+        return
+
+    await callback.message.edit_text(f"🔄 Refreshing {chat_type} style profile...")
+    try:
+        new_style = await OpenAIService().refresh_style(chat_type, session, message_count=count)
+    except Exception as exc:  # noqa: BLE001 — OpenAI ошибки разные
+        logger.error("Error refreshing style: %s", exc, exc_info=True)
+        await callback.message.edit_text("Sorry, I couldn't refresh the style profile.")
+        return
+
+    text = (
+        f"🎨 Style Profile for {chat_type.title()} Chats:\n\n"
+        f"Last Updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"Style Guide:\n{new_style}"
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Refresh Again",
+                    callback_data=f"refcnt|{chat_type}|{count}",
+                )
+            ]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# /test — send a test message into a chat
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("test"))
+async def test_command(message: Message, session: AsyncSession) -> None:
+    """Test bot functionality in a specific chat."""
+    if not _is_owner_private(message):
+        return
+
+    chats = await _get_all_chats(session)
+    if not chats:
+        await message.answer("No chats found in database.")
+        return
+
+    for chat in chats:
+        await update_chat_title(message, chat.id, session)
+
+    await message.answer(
+        "Select chat to test bot functionality:",
+        reply_markup=_chat_keyboard(chats, prefix="testchat"),
+    )
+
+
+@router.callback_query(F.data.startswith("testchat|"))
+async def process_test_chat(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Process test chat selection."""
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
         await callback.answer("Chat not found", show_alert=True)
+        return
+
+    try:
+        await callback.bot.send_message(chat_id=chat.telegram_id, text="🤖 Test message from bot")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to send test message: %s", exc)
+        await callback.answer("Failed to send test message", show_alert=True)
+        return
+
+    await callback.answer(f"Test message sent to {_format_chat_name(chat)}")
+
+
+# ---------------------------------------------------------------------------
+# /tag
+# ---------------------------------------------------------------------------
+
 
 @router.message(Command("tag"))
-async def tag_command(message: Message, command: CommandObject, session: AsyncSession):
+async def tag_command(
+    message: Message,
+    command: CommandObject,
+    session: AsyncSession,
+) -> None:
     """Handle tag-related commands."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if not _is_owner_private(message):
         return
-    
+
     if not command.args:
         await message.answer(
             "Usage:\n"
@@ -1169,29 +1174,19 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
     if not args:
         return
 
-    context_service = ContextService(session)
     action = args[0].lower()
+    context_service = ContextService(session)
 
     if action == "stats":
-        # Get tag statistics
-        query = select(MessageTag).join(Tag)
-        result = await session.execute(query)
-        tags = result.scalars().all()
-
-        tag_stats = {}
-        for mt in tags:
-            tag_stats[mt.tag.name] = tag_stats.get(mt.tag.name, 0) + 1
-
-        if not tag_stats:
+        result = await session.execute(select(Tag))
+        all_tags = list(result.scalars().all())
+        if not all_tags:
             await message.answer("No tags found.")
             return
-
-        # Format statistics
-        stats_text = "📊 Tag Statistics:\n\n"
-        for tag, count in sorted(tag_stats.items(), key=lambda x: x[1], reverse=True):
-            stats_text += f"{tag}: {count} uses\n"
-
-        await message.answer(stats_text)
+        lines = ["📊 Tag Statistics:\n"]
+        for tag in all_tags:
+            lines.append(f"#{tag.name}")
+        await message.answer("\n".join(lines))
         return
 
     if len(args) < 2:
@@ -1204,15 +1199,9 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
         await message.answer("Invalid message ID")
         return
 
-    # Get target message
-    query = select(DBMessage).where(
-        DBMessage.chat_id == message.chat.id,
-        DBMessage.message_id == target_msg_id
-    )
-    result = await session.execute(query)
+    result = await session.execute(select(DBMessage).where(DBMessage.message_id == target_msg_id))
     target_msg = result.scalar_one_or_none()
-
-    if not target_msg:
+    if target_msg is None:
         await message.answer("Message not found")
         return
 
@@ -1220,25 +1209,22 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
         if not target_msg.tags:
             await message.answer("No tags for this message")
             return
-
-        tags_text = "🏷 Tags:\n"
+        lines = ["🏷 Tags:"]
         for mt in target_msg.tags:
-            tags_text += f"#{mt.tag.name}"
-            if mt.is_auto:
-                tags_text += " (auto)"
-            tags_text += "\n"
+            suffix = " (auto)" if mt.is_auto else ""
+            lines.append(f"#{mt.tag.name}{suffix}")
+        await message.answer("\n".join(lines))
+        return
 
-        await message.answer(tags_text)
-
-    elif action == "add" and len(args) >= 3:
-        tag_name = args[2].strip("#")  # Remove # if present
+    if action == "add" and len(args) >= 3:
+        tag_name = args[2].strip("#")
         tags = await context_service.get_or_create_tags([tag_name])
         await context_service.add_tags_to_message(target_msg, tags, is_auto=False)
         await message.answer(f"Added tag #{tag_name} to message {target_msg_id}")
+        return
 
-    elif action == "remove" and len(args) >= 3:
+    if action == "remove" and len(args) >= 3:
         tag_name = args[2].strip("#")
-        # Find and remove tag
         for mt in target_msg.tags:
             if mt.tag.name == tag_name:
                 await session.delete(mt)
@@ -1246,431 +1232,264 @@ async def tag_command(message: Message, command: CommandObject, session: AsyncSe
                 await message.answer(f"Removed tag #{tag_name} from message {target_msg_id}")
                 return
         await message.answer(f"Tag #{tag_name} not found on message {target_msg_id}")
+        return
 
-    else:
-        await message.answer("Invalid command format")
+    await message.answer("Invalid command format")
+
+
+# ---------------------------------------------------------------------------
+# /thread
+# ---------------------------------------------------------------------------
+
 
 @router.message(Command("thread"))
-async def thread_command(message: Message, command: CommandObject, session: AsyncSession):
+async def thread_command(
+    message: Message,
+    command: CommandObject,
+    session: AsyncSession,
+) -> None:
     """Handle thread-related commands."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if not _is_owner_private(message):
         return
-    
+
     if not command.args:
         await message.answer(
             "Usage:\n"
-            "/thread info - Show current thread info\n"
-            "/thread list - List active threads\n"
-            "/thread new <topic> - Start new thread\n"
-            "/thread close - Close current thread"
+            "/thread info <chat_telegram_id> - Show current thread info\n"
+            "/thread list <chat_telegram_id> - List active threads\n"
+            "/thread new <chat_telegram_id> <topic> - Start new thread\n"
+            "/thread close <chat_telegram_id> - Close current thread"
         )
         return
 
-    context_service = ContextService(session)
     args = command.args.split()
+    if len(args) < 2:
+        await message.answer("Please provide chat_telegram_id as the second argument.")
+        return
+
     action = args[0].lower()
+    try:
+        telegram_id = int(args[1])
+    except ValueError:
+        await message.answer("Invalid chat_telegram_id")
+        return
+
+    result = await session.execute(select(Chat).where(Chat.telegram_id == telegram_id))
+    chat = result.scalar_one_or_none()
+    if chat is None:
+        await message.answer("Chat not found")
+        return
+
+    context_service = ContextService(session)
 
     if action == "list":
-        # List active threads
-        query = select(MessageThread).where(
-            MessageThread.chat_id == message.chat.id,
-            MessageThread.is_active == True
+        result = await session.execute(
+            select(MessageThread).where(
+                MessageThread.chat_id == chat.id,
+                MessageThread.is_active.is_(True),
+            )
         )
-        result = await session.execute(query)
-        threads = result.scalars().all()
-
+        threads = list(result.scalars().all())
         if not threads:
             await message.answer("No active threads")
             return
-
-        text = "🧵 Active Threads:\n\n"
+        lines = ["🧵 Active Threads:\n"]
         for thread in threads:
-            # Get thread stats
             stats = await context_service.get_thread_stats(thread)
-            
-            text += f"📌 {thread.topic}\n"
+            lines.append(f"📌 {thread.topic}")
             if stats:
-                text += f"Messages: {stats['total_messages']}\n"
-                text += f"Users: {stats['unique_users']}\n"
-                text += f"Duration: {stats['duration_hours']:.1f}h\n"
-                if stats['top_tags']:
-                    text += "Top tags: " + ", ".join(f"#{tag}" for tag, _ in stats['top_tags']) + "\n"
-            text += "\n"
+                lines.append(f"Messages: {stats['message_count']}")
+                lines.append(f"Users: {stats['unique_users']}")
+                lines.append(f"Duration: {stats['duration_hours']:.1f}h")
+                if stats["top_tags"]:
+                    lines.append("Top tags: " + ", ".join(f"#{t}" for t in stats["top_tags"]))
+            lines.append("")
+        await message.answer("\n".join(lines))
+        return
 
-        await message.answer(text)
-
-    elif action == "info":
-        # Get current thread
-        thread = await context_service.get_or_create_thread(message.chat.id)
-        
-        # Get thread context
-        query = select(MessageContext).where(MessageContext.thread_id == thread.id)
-        result = await session.execute(query)
-        context = result.scalar_one_or_none()
-
-        if not context:
-            await message.answer("No context available for current thread")
-            return
-
-        # Get thread stats
+    if action == "info":
+        thread = await context_service.get_or_create_thread(chat.id)
+        ctx_result = await session.execute(
+            select(MessageContext).where(MessageContext.thread_id == thread.id)
+        )
+        context = ctx_result.scalar_one_or_none()
         stats = await context_service.get_thread_stats(thread)
-
-        # Get related threads
         related = await context_service.find_related_threads(thread)
 
-        text = f"🧵 Thread: {thread.topic}\n\n"
-        text += f"Context Summary:\n{context.context_summary}\n\n"
-        
+        lines = [f"🧵 Thread: {thread.topic}\n"]
+        if context and context.context_summary:
+            lines.append(f"Context Summary:\n{context.context_summary}\n")
         if stats:
-            text += "📊 Statistics:\n"
-            text += f"Messages: {stats['total_messages']}\n"
-            text += f"Users: {stats['unique_users']}\n"
-            text += f"Avg Length: {stats['avg_message_length']:.0f} chars\n"
-            text += f"Rate: {stats['messages_per_hour']:.1f} msgs/hour\n"
-            if stats['top_tags']:
-                text += "Top tags: " + ", ".join(f"#{tag}" for tag, _ in stats['top_tags']) + "\n"
-            text += "\n"
-
+            lines.append("📊 Statistics:")
+            lines.append(f"Messages: {stats['message_count']}")
+            lines.append(f"Users: {stats['unique_users']}")
+            lines.append(f"Avg Length: {stats['avg_message_length']:.0f} chars")
+            lines.append(f"Rate: {stats['messages_per_hour']:.1f} msgs/hour")
+            if stats["top_tags"]:
+                lines.append("Top tags: " + ", ".join(f"#{t}" for t in stats["top_tags"]))
+            lines.append("")
         if related:
-            text += "🔗 Related Threads:\n"
+            lines.append("🔗 Related Threads:")
             for rel in related:
-                text += f"- {rel.topic}\n"
+                lines.append(f"- {rel.topic}")
+        await message.answer("\n".join(lines))
+        return
 
-        await message.answer(text)
-
-    elif action == "new" and len(args) > 1:
-        # Start new thread
-        topic = " ".join(args[1:])
-        thread = await context_service.get_or_create_thread(message.chat.id, topic)
+    if action == "new" and len(args) > 2:
+        topic = " ".join(args[2:])
+        await context_service.get_or_create_thread(chat.id, topic)
         await message.answer(f"Started new thread: {topic}")
+        return
 
-    elif action == "close":
-        # Close current thread
-        thread = await context_service.get_or_create_thread(message.chat.id)
+    if action == "close":
+        thread = await context_service.get_or_create_thread(chat.id)
         thread.is_active = False
         await session.commit()
         await message.answer(f"Closed thread: {thread.topic}")
+        return
 
-    else:
-        await message.answer("Invalid command format")
+    await message.answer("Invalid command format")
+
+
+# ---------------------------------------------------------------------------
+# /set_style
+# ---------------------------------------------------------------------------
+
 
 @router.message(Command("set_style"))
-async def set_style_command(message: Message, session: AsyncSession):
+async def set_style_command(message: Message, session: AsyncSession) -> None:
     """Set chat style."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
+    if not _is_owner_private(message):
         return
-    
-    # Get all chats
-    chats = await session.execute(select(Chat))
-    chats = chats.scalars().all()
-    
-    keyboard = []
-    for chat in chats:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"🎯 {chat.name}",
-                callback_data=f"select_chat_{chat.id}"
-            )
-        ])
-    
-    await message.answer(
-        "Select chat to set style:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
 
-@router.callback_query(F.data.startswith("select_chat_"))
-async def select_chat_for_style(callback: CallbackQuery, session: AsyncSession):
-    """Select chat for style setting."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
-    
-    # Create style selection keyboard
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                text="💼 Work",
-                callback_data=f"set_style_{chat_id}_work"
-            ),
-            InlineKeyboardButton(
-                text="😊 Friendly",
-                callback_data=f"set_style_{chat_id}_friendly"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="🤝 Mixed",
-                callback_data=f"set_style_{chat_id}_mixed"
-            )
-        ]
-    ]
-    
-    await callback.message.edit_text(
-        "Select style for this chat:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-
-@router.callback_query(F.data.startswith("set_style_"))
-async def set_chat_style(callback: CallbackQuery, session: AsyncSession):
-    """Set chat style."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    _, _, chat_id, style = callback.data.split("_")
-    chat_id = chat_id  # Keep as string since it's a UUID
-    
-    # Update chat style
-    chat = await session.get(Chat, chat_id)
-    if chat:
-        chat.type = style
-        await session.commit()
-        
-        await callback.message.edit_text(
-            f"Style for {chat.name} set to {style}",
-            reply_markup=None
-        )
-
-@router.callback_query(F.data.startswith("summ_chat_"))
-async def summarize_chat(callback: CallbackQuery, session: AsyncSession):
-    """Generate chat summary."""
-    if callback.from_user.id != settings.OWNER_ID:
-        return
-    
-    chat_id = callback.data.split("_")[2]  # Keep as string since it's a UUID
-    chat = await session.get(Chat, chat_id)
-    if not chat:
-        await callback.answer("❌ Chat not found")
-        return
-    
-    # Update chat title
-    await update_chat_title(callback.message, chat_id, session)
-    
-    # Get messages from the last week
-    week_ago = datetime.now() - timedelta(days=7)
-    messages = await session.execute(
-        select(DBMessage)
-        .where(DBMessage.chat_id == chat_id)
-        .where(DBMessage.timestamp >= week_ago)
-        .order_by(DBMessage.timestamp)
-    )
-    messages = messages.scalars().all()
-    
-    if not messages:
-        await callback.answer("❌ No messages found in the last week")
-        return
-    
-    # Generate summary
-    context_service = ContextService(session)
-    summary = await context_service.generate_chat_summary(messages)
-    
-    await callback.message.answer(f"Summary for {chat.name}:\n\n{summary}")
-
-async def process_list_chats(message: Message, session: AsyncSession) -> None:
-    """Process listing of all chats."""
-    # Get all chats
-    result = await session.execute(select(Chat))
-    chats = result.scalars().all()
-    
+    chats = await _get_all_chats(session)
     if not chats:
         await message.answer("No chats found in database.")
         return
-    
-    # Create message with chat settings
-    text = "📊 Chat Settings:\n\n"
-    for chat in chats:
-        text += f"Chat: {chat.name}\n"
-        text += f"Type: {chat.type}\n"
-        text += f"Silent Mode: {'🔇' if chat.is_silent else '🔊'}\n"
-        text += f"Smart Mode: {'🤖' if chat.smart_mode else '💭'}\n"
-        text += f"Response Probability: {chat.response_probability:.2f}\n"
-        text += f"Importance Threshold: {chat.importance_threshold:.2f}\n"
-        text += f"Created: {chat.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        text += f"Updated: {chat.updated_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    
-    await message.answer(text)
 
-def create_chat_selection_keyboard(chats: List[Chat]) -> InlineKeyboardMarkup:
-    """Create keyboard for chat selection."""
-    keyboard = []
-    for chat in chats:
-        # Используем более короткий формат callback-данных
-        callback_data = f"sel|{chat.id}"
-        keyboard.append([InlineKeyboardButton(
-            text=chat.name,
-            callback_data=callback_data
-        )])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def create_probability_keyboard(chat_id: str) -> InlineKeyboardMarkup:
-    """Create keyboard for probability selection."""
-    keyboard = []
-    probabilities = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    for prob in probabilities:
-        # Используем более короткий формат callback-данных
-        callback_data = f"prob|{chat_id}|{prob}"
-        keyboard.append([InlineKeyboardButton(
-            text=f"{prob:.1f}",
-            callback_data=callback_data
-        )])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-@router.message(Command("style"))
-async def style_command(message: Message, session: AsyncSession):
-    """View current style profiles."""
-    if message.from_user.id != settings.OWNER_ID or message.chat.type != "private":
-        return
-    
-    # Create keyboard with style type options
     keyboard = [
         [
             InlineKeyboardButton(
-                text="💼 Work Style",
-                callback_data="view_style_work"
-            ),
-            InlineKeyboardButton(
-                text="😊 Friendly Style",
-                callback_data="view_style_friendly"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="🤝 Mixed Style",
-                callback_data="view_style_mixed"
+                text=f"🎯 {_format_chat_name(c)}",
+                callback_data=f"setchat|{c.id}",
             )
         ]
+        for c in chats
     ]
-    
     await message.answer(
-        "Select style type to view:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        "Select chat to set style:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
     )
 
-@router.callback_query(lambda c: c.data.startswith("view_style_"))
-async def view_style_profile(callback: CallbackQuery, session: AsyncSession):
+
+@router.callback_query(F.data.startswith("setchat|"))
+async def select_chat_for_style(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Pick a style for the selected chat."""
+    if not _owner_callback(callback):
+        return
+
+    _, chat_id = callback.data.split("|", 1)
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💼 Work", callback_data=f"setstyle|{chat.id}|work"),
+                InlineKeyboardButton(
+                    text="😊 Friendly", callback_data=f"setstyle|{chat.id}|friendly"
+                ),
+            ],
+            [InlineKeyboardButton(text="🤝 Mixed", callback_data=f"setstyle|{chat.id}|mixed")],
+        ]
+    )
+    await callback.message.edit_text("Select style for this chat:", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("setstyle|"))
+async def set_chat_style(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Apply a style to the selected chat."""
+    if not _owner_callback(callback):
+        return
+
+    try:
+        _, chat_id, style = callback.data.split("|", 2)
+    except ValueError:
+        await callback.message.edit_text("❌ Неверный формат")
+        return
+
+    chat = await _get_chat(session, chat_id)
+    if chat is None:
+        await callback.answer("Chat not found", show_alert=True)
+        return
+
+    chat.type = style.upper()
+    await session.commit()
+    await callback.message.edit_text(
+        f"Style for {_format_chat_name(chat)} set to {style}",
+        reply_markup=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /style — view style profiles
+# ---------------------------------------------------------------------------
+
+
+@router.message(Command("style"))
+async def style_command(message: Message, session: AsyncSession) -> None:
+    """View current style profiles."""
+    if not _is_owner_private(message):
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💼 Work Style", callback_data="viewstyle|work"),
+                InlineKeyboardButton(text="😊 Friendly Style", callback_data="viewstyle|friendly"),
+            ],
+            [InlineKeyboardButton(text="🤝 Mixed Style", callback_data="viewstyle|mixed")],
+        ]
+    )
+    await message.answer("Select style type to view:", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("viewstyle|"))
+async def view_style_profile(callback: CallbackQuery, session: AsyncSession) -> None:
     """View style profile for selected type."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can view style profiles", show_alert=True)
+    if not _owner_callback(callback):
+        await callback.answer("Not authorised", show_alert=True)
         return
-    
-    try:
-        # Get style type from callback data
-        style_type = callback.data.split("_")[2]
-        
-        # Get style from database
-        style = await session.execute(
-            select(Style).where(Style.chat_type == ChatType(style_type))
-        )
-        style = style.scalar_one_or_none()
-        
-        if not style:
-            await callback.message.edit_text(
-                f"No style profile found for {style_type} chats.\n"
-                "Use /refresh {style_type} to create one."
-            )
-            return
-        
-        # Format style information
-        style_text = f"🎨 Style Profile for {style_type.title()} Chats:\n\n"
-        style_text += f"Last Updated: {style.last_updated.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        style_text += "Style Guide:\n"
-        style_text += style.prompt_template
-        
-        # Add refresh button
-        keyboard = [[
-            InlineKeyboardButton(
-                text="🔄 Refresh Style",
-                callback_data=f"refresh_style_{style_type}"
-            )
-        ]]
-        
-        await callback.message.edit_text(
-            style_text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error viewing style profile: {e}")
-        await callback.message.edit_text("Sorry, I couldn't retrieve the style profile.")
 
-@router.callback_query(lambda c: c.data.startswith("refresh_style_"))
-async def refresh_style_callback(callback: CallbackQuery, session: AsyncSession):
-    """Refresh style profile for selected type."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can refresh style profiles", show_alert=True)
+    _, style_type = callback.data.split("|", 1)
+    if style_type not in {"work", "friendly", "mixed"}:
+        await callback.message.edit_text("❌ Неверный тип")
         return
-    
-    try:
-        # Get style type from callback data
-        style_type = callback.data.split("_")[2]
-        
-        # Show loading message
-        await callback.message.edit_text(f"🔄 Refreshing {style_type} style profile...")
-        
-        # Refresh style
-        openai_service = OpenAIService()
-        new_style = await openai_service.refresh_style(style_type, session)
-        
-        # Format style information
-        style_text = f"🎨 Style Profile for {style_type.title()} Chats:\n\n"
-        style_text += f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        style_text += "Style Guide:\n"
-        style_text += new_style
-        
-        # Add refresh button
-        keyboard = [[
-            InlineKeyboardButton(
-                text="🔄 Refresh Again",
-                callback_data=f"refresh_style_{style_type}"
-            )
-        ]]
-        
-        await callback.message.edit_text(
-            style_text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error refreshing style profile: {e}")
-        await callback.message.edit_text("Sorry, I couldn't refresh the style profile.")
 
-@router.callback_query(lambda c: c.data.startswith("refresh_count_"))
-async def refresh_style_with_count(callback: CallbackQuery, session: AsyncSession):
-    """Refresh style with selected message count."""
-    if callback.from_user.id != settings.OWNER_ID:
-        await callback.answer("Only the owner can refresh style profiles", show_alert=True)
-        return
-    
-    try:
-        # Get chat type and count from callback data
-        _, _, chat_type, count = callback.data.split("_")
-        
-        # Show loading message
-        await callback.message.edit_text(f"🔄 Refreshing {chat_type} style profile...")
-        
-        # Refresh style with selected count
-        openai_service = OpenAIService()
-        new_style = await openai_service.refresh_style(chat_type, session, message_count=count)
-        
-        # Format style information
-        style_text = f"🎨 Style Profile for {chat_type.title()} Chats:\n\n"
-        style_text += f"Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        style_text += "Style Guide:\n"
-        style_text += new_style
-        
-        # Add refresh button
-        keyboard = [[
-            InlineKeyboardButton(
-                text="🔄 Refresh Again",
-                callback_data=f"refresh_count_{chat_type}_{count}"
-            )
-        ]]
-        
+    result = await session.execute(select(Style).where(Style.chat_type == ChatType(style_type)))
+    style = result.scalar_one_or_none()
+    if style is None:
         await callback.message.edit_text(
-            style_text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            f"No style profile found for {style_type} chats.\n" f"Use /refresh to create one."
         )
-        
-    except Exception as e:
-        logger.error(f"Error refreshing style profile: {e}")
-        await callback.message.edit_text("Sorry, I couldn't refresh the style profile.") 
+        return
+
+    last_updated = style.last_updated.strftime("%Y-%m-%d %H:%M:%S") if style.last_updated else "—"
+    text = (
+        f"🎨 Style Profile for {style_type.title()} Chats:\n\n"
+        f"Last Updated: {last_updated}\n\n"
+        f"Style Guide:\n{style.prompt_template}"
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Refresh Style",
+                    callback_data=f"refcnt|{style_type}|100",
+                )
+            ]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=keyboard)

@@ -1,14 +1,13 @@
 import asyncio
+import os
+import sys
 from logging.config import fileConfig
 
-from sqlalchemy import pool, create_engine
-from sqlalchemy.engine import Connection
 import psycopg2
-
 from alembic import context
+from sqlalchemy import create_engine, pool
+from sqlalchemy.engine import Connection
 
-import sys
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
 from src.config import settings
@@ -36,6 +35,7 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
 
@@ -59,35 +59,31 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
+
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-        compare_type=True
-    )
+    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
 
     with context.begin_transaction():
         context.run_migrations()
 
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     # Convert async URL to sync URL and ensure we're using psycopg2
-    sync_url = settings.DATABASE_URL.replace('postgresql+asyncpg://', 'postgresql://')
-    
+    sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+
     connectable = create_engine(
         sync_url,
         poolclass=pool.NullPool,
         module=psycopg2,
-        connect_args={
-            "connect_timeout": 10,
-            "application_name": "alembic_migrations"
-        }
+        connect_args={"connect_timeout": 10, "application_name": "alembic_migrations"},
     )
 
     with connectable.connect() as connection:
         do_run_migrations(connection)
 
+
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online() 
+    run_migrations_online()

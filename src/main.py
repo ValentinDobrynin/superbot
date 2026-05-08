@@ -1,69 +1,67 @@
+"""Application entry point: build the bot, register handlers and start polling."""
+
+from __future__ import annotations
+
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, Router
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.base import StorageKey
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.token import validate_token
 from dotenv import load_dotenv
-import os
-from aiogram.client.default import DefaultBotProperties
 
 from .config import settings
-from .handlers import command_handler, message_handler, callback_handler
-from .database.database import get_session
+from .handlers import command_handler, message_handler
 from .middleware import DatabaseMiddleware
 from .services.notification_service import NotificationService
 from .services.stats_service import StatsService
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
 load_dotenv()
 
-# Validate token
-if not validate_token(settings.BOT_TOKEN):
-    raise ValueError("Invalid bot token")
 
-async def main():
-    """Main function."""
-    # Initialize bot and dispatcher
+async def main() -> None:
+    """Start the bot."""
+    if not validate_token(settings.BOT_TOKEN):
+        raise ValueError("Invalid BOT_TOKEN")
+
     bot = Bot(
         token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    
-    # Register middleware
+    dp = Dispatcher(storage=MemoryStorage())
+
     dp.message.middleware(DatabaseMiddleware())
     dp.callback_query.middleware(DatabaseMiddleware())
-    
-    # Register handlers
+    dp.chat_member.middleware(DatabaseMiddleware())
+
     dp.include_router(command_handler.router)
     dp.include_router(message_handler.router)
-    dp.include_router(callback_handler.router)
-    
-    # Send startup notification
+
     notification_service = NotificationService(bot, settings.OWNER_ID)
     await notification_service.notify_startup()
-    
-    # Start periodic stats update
-    session = await anext(get_session())
+
     stats_service = StatsService()
-    asyncio.create_task(stats_service.start_periodic_update(session))
-    
-    # Start polling
+    stats_task = asyncio.create_task(stats_service.start_periodic_update())
+
     logger.info("Starting bot...")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        stats_task.cancel()
+        try:
+            await stats_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 — игнорируем при выходе
+            pass
+        await bot.session.close()
+
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

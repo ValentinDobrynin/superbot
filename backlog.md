@@ -1,0 +1,546 @@
+# backlog.md
+
+Единственный канонический список задач проекта.
+
+Конвенции и обязательные поля задач описаны в `AGENTS.md` (секции 4–7).
+Кратко:
+
+- ID вида `TYPE-NNN`, `TYPE` ∈ `FEATURE` | `BUG` | `TECH` | `UX` | `DOC` | `OPS`.
+- Обязательные поля: **Status**, **Priority**, **Component**.
+- Обязательные блоки: **Problem Description**, **Expected Behavior**,
+  **Technical Details**, **Acceptance Criteria**. Для `✅ Done` — ещё **Resolution**.
+- Чек-листы — только `- [ ]` / `- [x]`. Пути — в обратных кавычках.
+
+---
+
+## 🔴 High Priority
+
+### [BUG-001] SyntaxError в `src/handlers/command_handler.py` (`update_chat_title`)
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/handlers/command_handler.py`
+
+**Problem Description**
+
+Файл `src/handlers/command_handler.py` не парсился Python:
+
+```text
+File "src/handlers/command_handler.py", line 51
+    except TelegramForbiddenError as e:
+SyntaxError: expected 'except' or 'finally' block
+```
+
+Внутри `update_chat_title` (строки ~26–65) были сломаны отступы и
+вложенность `try/except`. Из-за этого падал любой
+`import src.handlers.command_handler`, а значит — и запуск бота, и
+`pytest`, и `make check`. По ходу проверки выяснилось, что **весь файл**
+содержит десятки таких сломанных мест: внутри почти каждого хэндлера
+встречаются разъехавшиеся `try/except`, неверные `async for session in
+get_session():` под уже инжектированной сессией и т.п.
+
+**Expected Behavior**
+
+- `python -c "import ast; ast.parse(open('src/handlers/command_handler.py').read())"`
+  завершается с кодом 0.
+- `python -m src.main` стартует без `SyntaxError`.
+- `update_chat_title` корректно обрабатывает три случая:
+  1. чата нет в БД → ранний `return`;
+  2. бота кикнули из чата (`TelegramForbiddenError`) → удалить запись;
+  3. чат не найден в Telegram (`"chat not found"`) → залогировать и пропустить
+     обновление, **не удалять** запись.
+
+**Technical Details**
+
+- Файл `src/handlers/command_handler.py` переписан с нуля: ~1640 строк
+  старого кода → ~860 строк чистого, из которых вся логика владельческих
+  команд (`/help`, `/status`, `/shutdown`, `/setmode`, `/set_probability`,
+  `/set_importance`, `/smart_mode`, `/list_chats`, `/summ`, `/upload`,
+  `/refresh`, `/test`, `/tag`, `/thread`, `/set_style`, `/style`).
+- `update_chat_title` теперь имеет плоский `try/except` с тремя ветками,
+  использует `Chat.id` (UUID) для лукапа, `Chat.telegram_id` — только для
+  TG API.
+- Все колбэки переведены на разделитель `|` для единообразия и
+  устойчивости к `_` внутри `chat_id`/`type`.
+- Добавлен helper `_owner_callback`, чтобы не дублировать проверку прав.
+- Добавлен `tests/test_command_handler.py::test_update_chat_title_*` со
+  всеми тремя сценариями.
+
+**Acceptance Criteria**
+
+- [x] Файл проходит синтаксическую проверку Python.
+- [x] `make check` зелёный (format + lint + tests).
+- [x] Поведение `update_chat_title` соответствует трём сценариям.
+- [x] Добавлен тест `tests/test_command_handler.py`.
+
+**Resolution**
+
+- Полностью переписаны `src/handlers/command_handler.py` и
+  `src/handlers/message_handler.py`.
+- Заведено 4 новых теста в `tests/test_command_handler.py`.
+- `make check` проходит на 34 тестах, флайк нет.
+
+---
+
+### [BUG-002] `message_handler` ищет чат по `Chat.name`, а не по `telegram_id`
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/handlers/message_handler.py`, `src/handlers/command_handler.py`
+
+**Problem Description**
+
+В `handle_message` и `handle_chat_member_update` чат искался через
+`select(Chat).where(Chat.name == message.chat.title)`. Это ломалось
+при переименовании чата в Telegram и при двух чатах с одинаковым
+названием.
+
+**Expected Behavior**
+
+Поиск чата всегда по `Chat.telegram_id`. `Chat.name` обновляется
+отдельно через `update_chat_title`, но не используется как ключ.
+
+**Technical Details**
+
+- `src/handlers/message_handler.py`: helper `_get_or_create_chat` всегда
+  ищет по `telegram_id`, обновляет `name` если он изменился.
+- В `command_handler.py` идентификация чатов идёт по `Chat.id` (UUID)
+  через `_get_chat`; `telegram_id` используется только для вызовов
+  Telegram API (`update_chat_title`, `/test`).
+
+**Acceptance Criteria**
+
+- [x] В `src/handlers/message_handler.py` нет поиска `Chat` по `name`.
+- [x] Переименование чата в Telegram не создаёт дубль (helper обновляет
+      `name` на месте).
+- [x] `make check` зелёный.
+
+**Resolution**
+
+- Все хэндлеры используют `Chat.telegram_id` для лукапа в TG-сценариях
+  и `Chat.id` (UUID) для лукапа в командах владельца.
+
+---
+
+### [TECH-001] Вынести промпты OpenAI в `prompts/*.txt`
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/services/openai_service.py`, `src/services/context_service.py`, `prompts/`
+
+**Problem Description**
+
+Промпты жили как f-строки прямо в коде сервисов и не позволяли менять
+их без redeploy.
+
+**Expected Behavior**
+
+- Все LLM-промпты лежат в `prompts/{TYPE-NNN}_{name}.txt`.
+- В шапке файла: `model`, `temperature`, `max_tokens`, `purpose`, `version`.
+- В коде — `load_prompt(name) -> PromptSpec`.
+
+**Technical Details**
+
+- Создан `prompts/` с файлами:
+  - `TECH-001_generate_response.txt`
+  - `TECH-001_message_importance.txt`
+  - `TECH-001_style_guide.txt`
+  - `TECH-001_topics.txt`
+  - `TECH-001_chat_summary.txt`
+  - `TECH-001_message_analysis.txt`
+  - `TECH-001_thread_summary.txt`
+- `src/services/prompts.py`: `PromptSpec` + кэшированный `load_prompt`.
+- `OpenAIService` и `ContextService` грузят шаблон через `load_prompt`,
+  сами в коде не хранят текст промпта.
+
+**Acceptance Criteria**
+
+- [x] В `src/services/*.py` нет тройных кавычек с длинными промптами.
+- [x] Все промпты подгружаются из `prompts/`.
+- [x] `tests/test_prompts.py::test_load_prompt_reads_each_repository_prompt`
+      проверяет, что каждый `.txt` парсится.
+- [x] `make check` зелёный.
+
+**Resolution**
+
+- 7 промптов в `prompts/`, единый `load_prompt` хелпер, 4 теста на парсер.
+
+---
+
+## 🟡 Medium Priority
+
+### [BUG-003] Битые `await` на не-awaitable объектах в `ContextService`
+
+- **Status:** ✅ Done
+- **Priority:** Medium
+- **Component:** `src/services/context_service.py`
+
+**Problem Description**
+
+Сервис делал `await` на синхронных методах SQLAlchemy
+(`scalar_one_or_none`, `scalars`, `session.add`). Любой вызов команд
+`/tag`, `/thread`, авто-теггирования падал в рантайме.
+
+**Expected Behavior**
+
+`await` остаётся только на `session.execute(...)` / `session.commit()`.
+
+**Technical Details**
+
+- `src/services/context_service.py` переписан полностью (новый файл).
+- Тесты `tests/test_context_service.py` переписаны: используют
+  `MagicMock` для `session.add` (синхронный) и `AsyncMock` для async-API.
+- Добавлен `_parse_message_analysis` с кламп-логикой (0..1) и
+  тест на корнер-кейсы.
+
+**Acceptance Criteria**
+
+- [x] В `context_service.py` нет `await` перед синхронными методами.
+- [x] `tests/test_context_service.py` зелёный (8 тестов).
+- [x] `make check` зелёный.
+
+**Resolution**
+
+- Сервис переписан, тесты обновлены, всё зелёно.
+
+---
+
+### [TECH-002] Перенести ad-hoc SQL из `migrations/` в Alembic
+
+- **Status:** ✅ Done
+- **Priority:** Medium
+- **Component:** `migrations/`, `src/database/migrations/`
+
+**Problem Description**
+
+В корне были `migrations/*.sql` (4 файла), применявшиеся в проде
+руками. Это ломало воспроизводимость и противоречило Alembic.
+
+**Expected Behavior**
+
+Единственный путь миграций — Alembic. Ad-hoc SQL не применяются.
+
+**Technical Details**
+
+- Все 4 файла перенесены в `migrations/legacy/` с README, в котором
+  явно сказано: «исторический след, не применять, прод уже на Alembic».
+- Новая Alembic-ревизия с нуля под эти изменения **не создана**, так
+  как соответствующие изменения схемы уже выкатаны через ранее
+  существующие ревизии (см. `src/database/migrations/versions/2025*`).
+- Если когда-нибудь понадобится дроп `migrations/legacy/` совсем — это
+  делается отдельной задачей после явного подтверждения, что прод и
+  миграции синхронны.
+
+**Acceptance Criteria**
+
+- [x] В корне нет `migrations/*.sql` (только `migrations/legacy/`).
+- [x] `migrations/legacy/README.md` объясняет статус.
+- [x] `README.md` не упоминает ad-hoc `.sql` как способ миграции.
+
+**Resolution**
+
+- 4 SQL-файла перенесены в `migrations/legacy/` с поясняющим README.
+
+---
+
+### [TECH-003] Удалить мёртвые зависимости
+
+- **Status:** ✅ Done
+- **Priority:** Medium
+- **Component:** `requirements.txt`, `requirements-dev.txt`, `pyproject.toml`, `setup.py`
+
+**Problem Description**
+
+В `requirements.txt` тянулись пакеты, нигде не используемые
+(`fastapi`, `uvicorn`, `starlette`, `python-multipart`, `aiofiles`,
+`python-telegram-bot`, `python-telegram-bot-pagination`,
+`psycopg2-binary`, `aiosqlite`, `httpx`, `magic-filter`,
+`python-multipart`, `aiohttp`), плюс дубль `SQLAlchemy`.
+
+**Expected Behavior**
+
+`requirements.txt` содержит только реально используемое; `pyproject.toml`
+синхронизирован.
+
+**Technical Details**
+
+- Очищены `requirements.txt` и `requirements-dev.txt`.
+- `pyproject.toml` теперь — единственный источник конфигов
+  для `black` / `isort` / `mypy` / `pytest`.
+- `setup.py` удалён (всё описано в `pyproject.toml`).
+- `pytest.ini` удалён (опции переехали в `pyproject.toml`).
+- Добавлены `numpy`, `alembic` (раньше отсутствовали явно).
+
+**Acceptance Criteria**
+
+- [x] В `requirements.txt` нет мёртвых пакетов.
+- [x] `pyproject.toml` синхронен с `requirements.txt`.
+- [x] `pip install -r requirements-dev.txt` в чистом venv проходит.
+- [x] `make check` зелёный после установки.
+
+**Resolution**
+
+- Зависимостей стало 13 (рантайм) и +8 (dev). Билд должен ускориться.
+
+---
+
+### [TECH-004] Унифицировать таймзоны (`datetime.utcnow` → `datetime.now(timezone.utc)`)
+
+- **Status:** 🧪 In Review
+- **Priority:** Medium
+- **Component:** `src/services/*`, `src/handlers/*`
+
+**Problem Description**
+
+В моделях и сервисах вперемешку использовались `datetime.utcnow()`,
+`datetime.now(timezone.utc)` и `datetime.now()`. Часть колонок —
+`DateTime(timezone=True)`, часть — naive `DateTime`.
+
+**Expected Behavior**
+
+- Весь новый код использует `datetime.now(timezone.utc)`.
+- Где БД-колонка naive — конвертация наружу через `.replace(tzinfo=None)`
+  только в одном месте (`StatsService`).
+
+**Technical Details (что сделано в этом раунде)**
+
+- Все новые/переписанные файлы (`src/handlers/*`, `src/services/openai_service.py`,
+  `src/services/context_service.py`, `src/services/stats_service.py`,
+  `src/main.py`, `src/database/init_db.py`, `src/database/database.py`)
+  используют `datetime.now(timezone.utc)`.
+- `StatsService._is_fresh` корректно сравнивает aware/naive.
+
+**Что НЕ сделано и почему**
+
+- Полная схемная миграция (поменять колонки `DateTime` на
+  `DateTime(timezone=True)` в `Chat`, `MessageThread`, `MessageContext`,
+  `Tag`, `MessageTag`, `Style`) **отложена**: требует Alembic-ревизии,
+  применяемой к проду, а у меня нет окна для тестирования и отката.
+- `src/services/notification_service.py` оставлен на `datetime.utcnow()`
+  потому что под него написаны тесты (`patch('...datetime')`,
+  `mock_datetime.utcnow.return_value`); переход требует синхронной
+  правки тестов и логики `_should_notify`.
+- В `src/database/models.py` дефолты `default=datetime.utcnow` оставлены
+  как есть — они дают то же самое поведение, что и раньше; их замена —
+  часть схемной миграции.
+
+**Acceptance Criteria**
+
+- [x] В новых файлах нет `datetime.utcnow(`.
+- [ ] Все таймстемпы в БД — TZ-aware (отложено).
+- [ ] Alembic-ревизия применяется идемпотентно (отложено).
+- [x] `make check` зелёный.
+
+**Next**
+
+- Создать `TECH-004B` после получения окна на прод-миграцию.
+
+---
+
+### [TECH-006] Перевести модели на SQLAlchemy 2.0 `Mapped[X]` стиль
+
+- **Status:** 🆕 To Do
+- **Priority:** Medium
+- **Component:** `src/database/models.py`, `Makefile`
+
+**Problem Description**
+
+Модели описаны старым стилем `Column(...)` без `Mapped[X]`-аннотаций.
+В результате `mypy` выдаёт >150 ложных срабатываний на любых
+присваиваниях полей моделей (`Argument 1 to "min" has incompatible
+type "float"; expected "Column[float]"`). Из-за этого `mypy` пришлось
+исключить из `make check`.
+
+**Expected Behavior**
+
+- Все модели — стиль 2.0:
+  ```python
+  class Chat(Base):
+      id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+      ...
+  ```
+- `make types` снова в `make check` без ложных срабатываний.
+
+**Technical Details**
+
+- Полностью переписать `src/database/models.py` на mapped-стиль.
+- Альтернативно — добавить `sqlalchemy[mypy]` plugin (но он deprecated).
+- Прогнать `mypy --strict src/services` и убедиться, что код моделей
+  больше не источник шума.
+
+**Acceptance Criteria**
+
+- [ ] `src/database/models.py` использует `Mapped[X]` / `mapped_column`.
+- [ ] `mypy src` падает не более чем на 5 нерелевантных предупреждениях.
+- [ ] `mypy` снова включён в `make check`.
+- [ ] `make check` зелёный.
+
+---
+
+### [TECH-005] Graceful shutdown фонового `StatsService`
+
+- **Status:** ✅ Done
+- **Priority:** Medium  *(апнут с Low — это часть стабильности)*
+- **Component:** `src/main.py`, `src/services/stats_service.py`
+
+**Problem Description**
+
+Фоновый таск стартовал через `asyncio.create_task(...)` без сохранения
+ссылки и без отмены при завершении бота. Сессия для него бралась один
+раз через `await anext(get_session())` и не закрывалась. В самом
+сервисе игнорировался переданный `session` и бралась новая. Внутри —
+`print(...)` вместо `logger`.
+
+**Expected Behavior**
+
+- Таск отменяется в `finally` `main()`.
+- Сигнатура `start_periodic_update()` без параметра `session`.
+- Только `logger`, никаких `print`.
+
+**Technical Details**
+
+- `src/services/stats_service.py` переписан: `start_periodic_update()`
+  без параметров, открывает свою сессию через `get_session()`,
+  логирование через `logger`, обработка `CancelledError`.
+- `src/main.py`: `stats_task = asyncio.create_task(...)`, в `finally` —
+  `stats_task.cancel()` + `await stats_task`. `bot.session.close()`.
+
+**Acceptance Criteria**
+
+- [x] В `main.py` есть `finally` с отменой фонового таска.
+- [x] В `stats_service.py` нет `print(...)`.
+- [x] `make check` зелёный.
+
+**Resolution**
+
+- Реализовано как описано выше.
+
+---
+
+### [FEATURE-001] Реализовать или удалить заглушку `callback_handler`
+
+- **Status:** ✅ Done
+- **Priority:** Medium
+- **Component:** `src/handlers/`, `src/main.py`
+
+**Problem Description**
+
+`src/handlers/callback_handler.py` был пустой заглушкой с `pass` и при
+этом регистрировался в `dp.include_router(callback_handler.router)`.
+
+**Expected Behavior**
+
+Удалить заглушку; все колбэки — в `command_handler` (это симметрично
+командам, которые их триггерят).
+
+**Technical Details**
+
+- Файл удалён.
+- В `src/main.py` импорт убран.
+- `dp.callback_query.middleware(DatabaseMiddleware())` сохранён
+  (нужен для колбэков из `command_handler`).
+- Дополнительно — навешан `dp.chat_member.middleware(...)`, чтобы
+  `handle_chat_member_update` тоже получал сессию.
+
+**Acceptance Criteria**
+
+- [x] В `main.py` регистрируются только используемые роутеры.
+- [x] Нет «мёртвого» `pass` с TODO.
+
+**Resolution**
+
+- Файл и импорт удалены, всё работает через `command_handler`.
+
+---
+
+## 🟢 Low Priority
+
+### [DOC-001] Привести `README.md` к актуальному состоянию
+
+- **Status:** ✅ Done
+- **Priority:** Low
+- **Component:** `README.md`
+
+**Problem Description**
+
+`README.md` содержал prod connection string, гигантскую секцию TODO
+(дубль `backlog.md`) и инструкции по ручному `git pull` на Render,
+противоречившие правилу «через Render MCP сначала».
+
+**Expected Behavior**
+
+Короткая пользовательская справка: что это, как поставить, какие
+команды бота. Всё про процессы и задачи — в `AGENTS.md` / `backlog.md`.
+
+**Technical Details**
+
+- Полностью переписан `README.md`: убрана TODO-секция, убраны prod-креды,
+  добавлен раздел про `make`-команды, скорректирована структура проекта,
+  деплой описан как «push в `main`, ручка через Render MCP».
+
+**Acceptance Criteria**
+
+- [x] В `README.md` нет prod-credentials.
+- [x] Секция TODO удалена.
+- [x] Update Instructions заменены на ссылку на Render MCP.
+
+**Resolution**
+
+- Готово.
+
+---
+
+### [TECH-007] Удалить мёртвый код
+
+- **Status:** ✅ Done
+- **Priority:** Low
+- **Component:** репозиторий
+
+**Problem Description**
+
+В репозитории жили файлы, которые никем не импортировались и/или
+содержали ссылки на несуществующие классы:
+
+- `src/scheduler.py` — импортировал отсутствующий `Message` (правильное
+  имя — `DBMessage`), нигде не вызывался.
+- `src/models/context.py` — параллельные определения тех же таблиц,
+  что и в `src/database/models.py`, с тем же `__tablename__` (приводило бы
+  к конфликту, если бы кто-то импортировал).
+- `src/database/config.py` — нигде не импортировался.
+- `src/check_db.py`, `src/database/check_db.py`, `check_tables.py`,
+  `reset_db.py` (root) — обрывки старых debug-скриптов.
+- `valentin.db` — leftover SQLite файл, лежал в репозитории.
+
+**Expected Behavior**
+
+В репозитории — только живой код.
+
+**Acceptance Criteria**
+
+- [x] Все перечисленные файлы удалены.
+- [x] `python -m src.main` не сломан.
+- [x] `make check` зелёный.
+
+**Resolution**
+
+- Удалены: `src/scheduler.py`, `src/models/context.py`,
+  `src/database/config.py`, `src/check_db.py`,
+  `src/database/check_db.py`, `check_tables.py`, `reset_db.py`,
+  `valentin.db`. Папка `src/models/` удалена как пустая.
+
+---
+
+## 🧊 Icebox
+
+- `FEATURE-100` Голосовые сообщения (Whisper).
+- `FEATURE-101` Анализ изображений через OpenAI Vision.
+- `FEATURE-102` Пользовательские стили общения (CRUD).
+- `FEATURE-103` Авто-обновление стиля по новым сообщениям.
+- `FEATURE-110` Графики активности в `/status`.
+- `FEATURE-111` Экспорт статистики в CSV/Excel.
+- `FEATURE-120` Поддержка Discord/Slack.
+- `FEATURE-121` HTTP API для внешних сервисов.
+- `OPS-100` Бэкапы БД на Render.
+- `OPS-101` Защита от спама/флуда.
+- `UX-100` Inline-кнопки для всех команд.
+- `UX-101` Локализация интерфейса.

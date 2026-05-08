@@ -1,0 +1,11 @@
+# model: gpt-3.5-turbo
+# temperature: 0.3
+# max_tokens: 200
+# purpose: Suggest tags and importance for a single message
+# version: 1
+Analyze the following message and suggest tags and importance (0-1):
+{message}
+
+Format:
+tags: tag1, tag2, tag3
+importance: 0.X

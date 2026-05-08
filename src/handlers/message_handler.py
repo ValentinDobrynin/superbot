@@ -1,220 +1,166 @@
-from aiogram import Router, F
-from aiogram.types import Message, ChatMemberUpdated
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+"""Handle non-command messages and chat-membership updates."""
+
+from __future__ import annotations
+
 import logging
 import random
+from typing import Optional
+
+from aiogram import F, Router
+from aiogram.types import ChatMemberUpdated, Message
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database.models import Chat, ChatType, DBMessage
-from .command_handler import update_chat_title
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-@router.chat_member()
-async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSession):
-    """Handle chat member updates."""
-    # Skip if bot is in global shutdown mode
-    if settings.is_shutdown:
-        return
-        
-    # Check if this is our bot being added to a chat
-    if event.new_chat_member.user.id == event.bot.id:
-        logger.info(f"Bot was added to chat {event.chat.id}")
-        
-        # Get chat from database
-        query = select(Chat).where(Chat.name == event.chat.title)
-        result = await session.execute(query)
-        chat = result.scalar_one_or_none()
-        
-        if not chat:
-            # Create new chat
-            logger.info(f"Creating new chat with title {event.chat.title}")
-            logger.info(f"Chat info from event: title='{event.chat.title}', type='{event.chat.type}'")
-            
-            # Get chat info from Telegram
-            try:
-                chat_info = await event.bot.get_chat(event.chat.id)
-                logger.info(f"Got chat info from Telegram: title='{chat_info.title}', type='{chat_info.type}'")
-                title = chat_info.title
-            except Exception as e:
-                logger.error(f"Failed to get chat info: {e}", exc_info=True)
-                title = event.chat.title or "Unknown Chat"
-            
-            chat = Chat(
-                name=title,
-                description=f"Telegram chat {event.chat.id}",
-                type="MIXED",  # Default type
-                telegram_id=event.chat.id  # Store Telegram's chat ID
-            )
-            session.add(chat)
-            await session.commit()
-            logger.info(f"Created new chat: {chat.name}")
-        else:
-            logger.info(f"Chat already exists in database: {chat.name}")
-        
-    # Update chat title if it changed
-    if event.chat.title != event.old_chat.title:
-        logger.info(f"Chat title changed from '{event.old_chat.title}' to '{event.chat.title}'")
-        # Create a dummy message object with bot instance
-        dummy_message = Message(
-            message_id=0,
-            date=0,
-            chat=event.chat,
-            bot=event.bot
-        )
-        await update_chat_title(dummy_message, event.chat.id, session)
 
-@router.message()
-async def handle_message(message: Message, session: AsyncSession):
-    """Handle all non-command messages."""
-    # Skip if message is from bot itself
-    if message.from_user.is_bot:
-        return
-        
-    # Skip if bot is in global shutdown mode
-    if settings.is_shutdown:
-        return
-        
-    # Get chat settings
-    query = select(Chat).where(Chat.name == message.chat.title)
-    result = await session.execute(query)
+async def _get_or_create_chat(
+    *,
+    session: AsyncSession,
+    telegram_id: int,
+    title: Optional[str],
+) -> Chat:
+    """Look up a chat by ``telegram_id`` (the only stable identifier) or create it."""
+    result = await session.execute(select(Chat).where(Chat.telegram_id == telegram_id))
     chat = result.scalar_one_or_none()
-    
-    # Create chat if it doesn't exist
-    if not chat:
-        logger.info(f"Creating new chat with title {message.chat.title}")
-        logger.info(f"Chat info from message: title='{message.chat.title}', type='{message.chat.type}'")
-        
-        # Get chat info from Telegram
-        try:
-            chat_info = await message.bot.get_chat(message.chat.id)
-            logger.info(f"Got chat info from Telegram: title='{chat_info.title}', type='{chat_info.type}'")
-            title = chat_info.title
-        except Exception as e:
-            logger.error(f"Failed to get chat info: {e}", exc_info=True)
-            title = message.chat.title or "Unknown Chat"
-        
-        chat = Chat(
-            name=title,
-            description=f"Telegram chat {message.chat.id}",
-            type="MIXED",  # Default type
-            telegram_id=message.chat.id  # Store Telegram's chat ID
-        )
-        session.add(chat)
-        await session.commit()
-        logger.info(f"Created new chat: {chat.name}")
-    
-    # If chat is in silent mode, only process the message without responding
-    if chat.is_silent:
-        # Process message for learning/context but don't respond
-        await process_message_for_learning(message, chat, session)
-        return
-        
-    # Process message and generate response
-    await process_message_and_respond(message, chat, session)
+    if chat is not None:
+        if title and chat.name != title:
+            chat.name = title
+            await session.commit()
+        return chat
 
-async def process_message_for_learning(message: Message, chat: Chat, session: AsyncSession):
-    """Process message for learning and context without generating response."""
-    # Save message to database
+    chat = Chat(
+        telegram_id=telegram_id,
+        name=title or f"Chat {telegram_id}",
+        description=f"Telegram chat {telegram_id}",
+        type=ChatType.MIXED.value.upper(),
+    )
+    session.add(chat)
+    await session.commit()
+    logger.info("Created new chat: telegram_id=%s, name=%s", telegram_id, chat.name)
+    return chat
+
+
+@router.chat_member()
+async def handle_chat_member_update(event: ChatMemberUpdated, session: AsyncSession) -> None:
+    """Track when the bot itself is added to or removed from chats."""
+    if settings.is_shutdown:
+        return
+
+    if event.new_chat_member.user.id != event.bot.id:
+        return
+
+    title = event.chat.title
+    try:
+        chat_info = await event.bot.get_chat(event.chat.id)
+        title = chat_info.title or title
+    except Exception as exc:  # noqa: BLE001 — TG может вернуть что угодно
+        logger.warning("Could not fetch chat info for %s: %s", event.chat.id, exc)
+
+    await _get_or_create_chat(session=session, telegram_id=event.chat.id, title=title)
+
+
+@router.message(F.text)
+async def handle_message(message: Message, session: AsyncSession) -> None:
+    """Persist incoming messages and, when allowed, generate a reply."""
+    if message.from_user is None or message.from_user.is_bot:
+        return
+    if settings.is_shutdown:
+        return
+    if message.chat.type == "private":
+        # Управляющие команды владельца приходят в личку и обрабатываются
+        # отдельно в command_handler; обычный текст в личке игнорируем.
+        return
+
+    chat = await _get_or_create_chat(
+        session=session,
+        telegram_id=message.chat.id,
+        title=message.chat.title,
+    )
+
+    if chat.is_silent:
+        await _process_for_learning(message, chat, session)
+        return
+
+    await _process_and_respond(message, chat, session)
+
+
+async def _save_message(message: Message, chat: Chat, session: AsyncSession) -> DBMessage:
     db_message = DBMessage(
         message_id=message.message_id,
         chat_id=chat.id,
         user_id=message.from_user.id,
         text=message.text,
         created_at=message.date,
+        updated_at=message.date,
         was_responded=False,
-        updated_at=message.date
     )
     session.add(db_message)
     await session.commit()
-    
-    # Process message for context
-    from ..services.context_service import ContextService
+    return db_message
+
+
+async def _process_for_learning(message: Message, chat: Chat, session: AsyncSession) -> None:
+    """Silent mode: save the message and ensure an active thread exists."""
+    await _save_message(message, chat, session)
+
+    from ..services.context_service import ContextService  # avoid circular import
+
     context_service = ContextService(session)
     await context_service.get_or_create_thread(chat.id)
 
-async def process_message_and_respond(
-    message: Message,
-    chat: Chat,
-    session: AsyncSession
-) -> None:
-    """Process message and generate response."""
+
+async def _process_and_respond(message: Message, chat: Chat, session: AsyncSession) -> None:
+    """Active mode: persist, decide whether to reply, and reply."""
+    if message.from_user.id == settings.OWNER_ID:
+        # Не отвечаем самому владельцу — но историю продолжаем сохранять.
+        await _save_message(message, chat, session)
+        return
+
+    db_message = await _save_message(message, chat, session)
+
+    from ..services.context_service import ContextService
+    from ..services.openai_service import OpenAIService
+
+    context_service = ContextService(session)
+    await context_service.get_or_create_thread(chat.id)
+
+    result = await session.execute(
+        select(DBMessage)
+        .where(DBMessage.chat_id == chat.id)
+        .order_by(DBMessage.created_at.desc())
+        .limit(settings.MAX_CONTEXT_MESSAGES)
+    )
+    recent = list(result.scalars().all())
+    context_messages = [{"text": msg.text, "is_user": True} for msg in reversed(recent) if msg.text]
+
+    openai_service = OpenAIService()
+    chat_type = ChatType((chat.type or ChatType.MIXED.value).lower())
+
     try:
-        # Skip if message is from owner
-        if message.from_user.id == settings.OWNER_ID:
-            return
-        
-        # Save message to database
-        db_message = DBMessage(
-            message_id=message.message_id,
-            chat_id=chat.id,
-            user_id=message.from_user.id,
-            text=message.text,
-            created_at=message.date,
-            was_responded=False,
-            updated_at=message.date
-        )
-        session.add(db_message)
-        await session.commit()
-        
-        # Process message for context
-        from ..services.context_service import ContextService
-        context_service = ContextService(session)
-        thread = await context_service.get_or_create_thread(chat.id)
-        
-        # Get recent messages for context
-        query = select(DBMessage).where(
-            DBMessage.chat_id == chat.id
-        ).order_by(DBMessage.created_at.desc()).limit(5)
-        result = await session.execute(query)
-        recent_messages = result.scalars().all()
-        
-        # Все сообщения считаем сообщениями от пользователей, кроме сообщений от бота
-        context_messages = [
-            {"text": msg.text, "is_user": True}
-            for msg in reversed(recent_messages)
-        ]
-        
-        # Generate response based on chat settings
         if chat.smart_mode:
-            # Use smart mode for response generation
-            from ..services.openai_service import OpenAIService
-            openai_service = OpenAIService()
-            
-            # Check if message is important enough to respond
-            importance = await openai_service.analyze_message_importance(message.text)
+            importance = await openai_service.analyze_message_importance(message.text or "")
             if importance < chat.importance_threshold:
                 return
-            
-            # Generate response
-            response = await openai_service.generate_response(
-                message=message.text,
-                chat_type=ChatType(chat.type.lower()),
-                context_messages=context_messages,
-                session=session
-            )
-            if response:
-                await message.reply(response)
-                db_message.was_responded = True
-                await session.commit()
         else:
-            # Use simple mode with probability
-            if random.random() < chat.response_probability:
-                # Generate simple response
-                from ..services.openai_service import OpenAIService
-                openai_service = OpenAIService()
-                response = await openai_service.generate_response(
-                    message=message.text,
-                    chat_type=ChatType(chat.type.lower()),
-                    context_messages=context_messages,
-                    session=session
-                )
-                if response:
-                    await message.reply(response)
-                    db_message.was_responded = True
-                    await session.commit()
-    except Exception as e:
-        logger.error(f"Error processing message: {e}")
-        await message.reply("Sorry, I couldn't process your message. Please try again later.") 
+            if random.random() >= chat.response_probability:
+                return
+
+        response = await openai_service.generate_response(
+            message=message.text or "",
+            chat_type=chat_type,
+            context_messages=context_messages,
+            session=session,
+        )
+        if response:
+            await message.reply(response)
+            db_message.was_responded = True
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 — не роняем поллер
+        logger.error(
+            "Error processing message in chat %s: %s", chat.telegram_id, exc, exc_info=True
+        )

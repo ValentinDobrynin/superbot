@@ -22,6 +22,8 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
+.venv-check/
 env/
 ENV/
 
@@ -44,4 +46,10 @@ ENV/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/

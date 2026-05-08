@@ -1,0 +1,26 @@
+# model: gpt-3.5-turbo
+# temperature: 0.3
+# max_tokens: 500
+# purpose: Extract the top topics from a conversation as JSON
+# version: 1
+Analyze the following conversation and identify the main topics being discussed.
+Return a JSON array of objects, where each object has:
+- "topic": A short topic name (1-3 words)
+- "count": Number of messages related to this topic
+
+Rules:
+1. Topics should be specific but not too narrow
+2. Each message can belong to multiple topics
+3. Return only the top 10 most frequent topics
+4. Topics should be in English
+5. Count should be an integer
+
+Example response:
+[
+    {{"topic": "Work Projects", "count": 45}},
+    {{"topic": "Technical Issues", "count": 32}},
+    {{"topic": "Team Meetings", "count": 28}}
+]
+
+Conversation:
+{conversation_text}

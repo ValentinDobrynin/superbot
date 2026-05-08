@@ -1,0 +1,10 @@
+# model: gpt-3.5-turbo
+# temperature: 0.3
+# max_tokens: 200
+# purpose: Summarize a small thread in 1-2 sentences
+# version: 1
+Summarize the following conversation:
+{messages_text}
+
+Format:
+Brief summary in 1-2 sentences.

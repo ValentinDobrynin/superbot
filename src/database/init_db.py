@@ -1,29 +1,34 @@
+"""CLI helper: drop & recreate all tables. Useful for local dev only."""
+
+from __future__ import annotations
+
 import asyncio
+import logging
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
-from src.database.base import Base
-from src.database.models import *  # Import all models to register them with Base
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from src.config import settings
+from src.database.base import Base
+from src.database.models import *  # noqa: F401,F403 — register models with Base
 
-async def init_db():
-    """Initialize the database by creating all tables."""
-    # Get database URL from environment
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        raise ValueError("DATABASE_URL environment variable is not set")
-    
-    # Create async engine
-    engine = create_async_engine(database_url, echo=True)
-    
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)  # Drop all existing tables
-        await conn.run_sync(Base.metadata.create_all)  # Create all tables
-    
-    await engine.dispose()
-    print("✅ Database initialized successfully!")
+logger = logging.getLogger(__name__)
+
+
+async def init_db() -> None:
+    if not settings.DATABASE_URL and not os.getenv("DATABASE_URL"):
+        raise ValueError("DATABASE_URL is not set")
+
+    engine = create_async_engine(settings.get_async_database_url(), echo=False)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database initialised (drop + create)")
+    finally:
+        await engine.dispose()
+
 
 if __name__ == "__main__":
-    asyncio.run(init_db()) 
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(init_db())
