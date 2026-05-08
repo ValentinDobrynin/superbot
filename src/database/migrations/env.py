@@ -1,56 +1,47 @@
+"""Alembic environment.
+
+Async migrations runner. Uses the same `asyncpg` driver the bot uses at
+runtime — there is no second sync DBAPI in this project.
+
+History: this used to import ``psycopg2`` and build a sync engine, which
+made ``psycopg2-binary`` an implicit, easy-to-miss dependency (see
+BUG-004 / TECH-008 in `backlog.md`). The current implementation runs
+``do_run_migrations`` inside ``connection.run_sync(...)``, which is the
+canonical async pattern from the SQLAlchemy / Alembic docs.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import os
 import sys
 from logging.config import fileConfig
 
-import psycopg2
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import pool
 from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import create_async_engine
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from src.config import settings
-from src.database.base import Base
-from src.database.models import *  # Import all models
+from src.config import settings  # noqa: E402
+from src.database.base import Base  # noqa: E402
+from src.database.models import *  # noqa: E402,F401,F403 — register models with Base
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url with the one from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.get_async_database_url())
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
 target_metadata = Base.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    url = settings.DATABASE_URL
+    """Generate SQL without opening a DB connection."""
     context.configure(
-        url=url,
+        url=settings.get_async_database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -67,20 +58,21 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    # Convert async URL to sync URL and ensure we're using psycopg2
-    sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-
-    connectable = create_engine(
-        sync_url,
+async def run_async_migrations() -> None:
+    """Open an async asyncpg connection and run sync migrations on top of it."""
+    connectable = create_async_engine(
+        settings.get_async_database_url(),
         poolclass=pool.NullPool,
-        module=psycopg2,
-        connect_args={"connect_timeout": 10, "application_name": "alembic_migrations"},
     )
 
-    with connectable.connect() as connection:
-        do_run_migrations(connection)
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():
