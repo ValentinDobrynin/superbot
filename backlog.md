@@ -15,6 +15,94 @@
 
 ## 🔴 High Priority
 
+### [TECH-012] Defensive filters поверх LLM extract'а: вопросы, фейк-18:00, дубли
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/services/digest_service.py`,
+  `tests/test_digest_service.py`
+
+**Problem Description**
+
+Прод-БД 8 мая показала характерный шум LLM extract'а на 42 чатах:
+
+- 17 коммитов из них:
+  - 3 — это **вопросы** (`Зум можешь сегодня дать?`,
+    `Мы без СЕО такие встречи делаем?`),
+  - 4 — короткие реакции без действия и дедлайна
+    (`как раз занимаюсь`, `Попрошу команду.`),
+  - 2 совпадают по тексту с events (`Сравнение предложений`).
+- 16 событий из них:
+  - 9 подряд имеют one-and-the-same fake `when_raw="12 мая в 18:00"`
+    при том, что в исходных чатах это время не упоминается.
+  - 2 события `Открытие офиса Silk Road в Ташкенте` дублируются
+    в одном бакете.
+  - 2 совпадают по тексту с commits.
+
+Промпт жадный, и пока B (полная переписка промптов) ещё впереди,
+нужен слой защиты на питоновском уровне.
+
+**Expected Behavior**
+
+После `_extract` (LLM-вывод) применяется `_sanitize_extracted`:
+
+1. Commit с `?` в конце → переезжает в `open_questions`
+   (с тем же `direction`).
+2. Commit без `deadline_raw` короче 4 слов → drop (реакция).
+3. Event с описанием короче 2 слов → drop.
+4. Events дедуп внутри чата по `(description.lower(), when_raw)`.
+5. Если `when_raw` содержит `HH:MM` или `D месяц`, но эти токены
+   не встречаются в исходных сообщениях чата → стираем `when_raw`
+   и `when_at` (event живёт, но без фейкового якоря).
+6. Если один и тот же текст в commit и event — побеждает event,
+   только если у него есть `when_raw`; иначе побеждает commit.
+
+**Technical Details**
+
+- `_QUESTION_TAIL_RE`, `_TIME_HHMM_RE`, `_DAY_MONTH_RE`,
+  `_normalize_for_match` — module-level helpers.
+- `_sanitize_extracted(extracted, messages_text)` — pure-функция,
+  на входе LLM-JSON, на выходе очищенный JSON. Не трогает
+  `summary_md` и `closed_commitments`.
+- Подключение: в `_extract` после `complete_json` прогоняем
+  `extracted` через `_sanitize_extracted(extracted, formatted)`.
+  `formatted` — тот же текст, что был передан в промпт LLM, поэтому
+  haystack-проверки fair и предсказуемы.
+- Тесты:
+  - `test_sanitize_moves_question_commits_to_open_questions`
+  - `test_sanitize_drops_tiny_commits_without_deadline` (порог 4)
+  - `test_sanitize_drops_hallucinated_18_00_when_not_in_source`
+  - `test_sanitize_keeps_18_00_when_present_in_source`
+  - `test_sanitize_dedups_identical_events_within_chat`
+  - `test_sanitize_resolves_commit_event_overlap` (case A: event
+    с датой выигрывает; case B: event без даты проигрывает)
+
+**Acceptance Criteria**
+
+- [x] Все 6 ожидаемых кейсов покрыты тестами.
+- [x] `_sanitize_extracted` подключён к боевому пути `_extract`.
+- [x] Ни один существующий тест не сломан.
+- [x] `make check` зелёный (140 passed).
+- [x] На следующем дайджесте ожидаем: «Зум можешь?» → в Open Questions,
+      9 одинаковых «12 мая в 18:00» → 0–1 валидное; пустые
+      «как раз занимаюсь» → исчезли.
+
+**Resolution**
+
+Слой A целиком на python-стороне, без изменений промпта (это будет
+шаг B). Логика максимально жадная на drop — лучше потерять валидный
+коммит, чем оставить шум. Все правила чисто-функциональные и
+тестируются юнит-тестами без сети. Эффект увидим на следующем
+авто-дайджесте 23:50 МСК — текст ушедшего сообщения теперь
+сохраняется в `daily_digests.body_md` (TECH-010), так что я смогу
+сравнить «до/после» постфактум.
+
+Шаг B (полная переписка промптов с few-shot и явным разделением
+commit/event/question) идёт следующим — он уменьшит шум на входе
+этого фильтра, но фильтр всё равно остаётся как страховка.
+
+---
+
 ### [TECH-011] Чинить `parse_deadline` для русских предлогов и `is_urgent` keyword fallback
 
 - **Status:** ✅ Done

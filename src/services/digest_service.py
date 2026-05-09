@@ -421,6 +421,146 @@ def _partner_label_for(chat: Chat) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Helpers: defensive filters on top of LLM extract (TECH-012, step A)          #
+# --------------------------------------------------------------------------- #
+
+# A trailing "?" is a strong signal that the LLM mis-classified a question
+# as a commit (we saw "Зум можешь сегодня дать?" land in commits=from_me).
+_QUESTION_TAIL_RE = re.compile(r"\?\s*$")
+
+# HH:MM patterns inside ``when_raw``. If the LLM ships "12 мая в 18:00" but
+# the source messages never mentioned "18:00", that's a hallucinated time
+# (this happened on 9-out-of-16 events in the 8 May digest).
+_TIME_HHMM_RE = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+
+# "12 мая" / "12 мая 2026" — verify the day-number actually appears in the
+# source. Month name itself is too common to anchor on.
+_DAY_MONTH_RE = re.compile(
+    r"\b(\d{1,2})\s+("
+    r"янв(?:ар[ея])?|фев(?:рал[ея])?|мар(?:та)?|апр(?:ел[ея])?|"
+    r"ма[яей]|июн[ея]?|июл[ея]?|авг(?:уст[ае])?|сент(?:ябр[ея])?|"
+    r"окт(?:ябр[ея])?|нояб(?:р[ея])?|дек(?:абр[ея])?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_for_match(s: Optional[str]) -> str:
+    """Lowercase, collapse whitespace — used for case-insensitive dedup."""
+    return " ".join((s or "").lower().strip().split())
+
+
+def _sanitize_extracted(extracted: Dict[str, Any], messages_text: str) -> Dict[str, Any]:
+    """Apply defensive filters on top of the LLM JSON before persisting.
+
+    The LLM is greedy: it cheerfully creates events with fake "12 May 18:00"
+    times, treats questions as commits, and mirrors the same line into
+    both buckets. This pass cleans up the obvious noise without trying to
+    second-guess the model's intent.
+
+    Operations:
+
+    1. Commits ending with ``?`` move to ``open_questions`` (with the same
+       ``direction`` mapping).
+    2. Tiny commits (<3 words) without a ``deadline_raw`` are dropped.
+    3. Events with a description shorter than 2 words are dropped.
+    4. Events deduped within a chat by (description, when_raw).
+    5. Events with hallucinated dates/times: if ``when_raw`` mentions a
+       HH:MM or DD MONTH that does not appear in the source messages,
+       we erase ``when_raw`` (and consequently ``when_at``) — keeping
+       the event itself, just without a fake anchor.
+    6. Cross-bucket: the same text in commit & event is collapsed —
+       event wins iff it has a ``when_raw``, else commit wins.
+    """
+    haystack = (messages_text or "").lower()
+    commitments = list(extracted.get("commitments") or [])
+    events = list(extracted.get("events") or [])
+    questions = list(extracted.get("open_questions") or [])
+
+    # 1+2: commits → questions / drop noise.
+    kept_commits: List[Dict[str, Any]] = []
+    for c in commitments:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        if _QUESTION_TAIL_RE.search(text):
+            questions.append(
+                {
+                    # ``direction`` semantics for questions: from_me means
+                    # I asked the partner; to_me means partner asked me.
+                    "direction": c.get("direction") or "from_me",
+                    "text": text,
+                }
+            )
+            continue
+        deadline_raw = (c.get("deadline_raw") or "").strip()
+        # Without a deadline, require at least 4 words — "как раз занимаюсь"
+        # / "попрошу команду" / "сделаю" are reactions, not commitments.
+        if not deadline_raw and len(text.split()) < 4:
+            continue
+        kept_commits.append(c)
+
+    # 3+4+5: events — drop tiny, dedup, validate dates.
+    kept_events: List[Dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for e in events:
+        desc = (e.get("description") or "").strip()
+        if len(desc.split()) < 2:
+            continue
+        when_raw_orig = (e.get("when_raw") or "").strip() or None
+
+        key = (_normalize_for_match(desc), _normalize_for_match(when_raw_orig or ""))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        when_raw = when_raw_orig
+        if when_raw:
+            time_match = _TIME_HHMM_RE.search(when_raw)
+            if time_match:
+                hh, mm = time_match.group(1), time_match.group(2)
+                # Both literal and zero-padded forms.
+                literal = f"{hh}:{mm}"
+                padded = f"{int(hh):02d}:{mm}"
+                if literal not in haystack and padded not in haystack:
+                    when_raw = None
+            if when_raw:
+                dm = _DAY_MONTH_RE.search(when_raw)
+                if dm and dm.group(1) not in haystack:
+                    when_raw = None
+
+        e["when_raw"] = when_raw
+        # Force re-parse from sanitised when_raw (DigestService._persist also
+        # re-parses, but be explicit so downstream stat code doesn't see a
+        # stale when_at after we wiped when_raw).
+        if when_raw is None:
+            e["when_at"] = None
+        kept_events.append(e)
+
+    # 6: cross-bucket overlap.
+    event_by_key: Dict[str, int] = {}
+    for idx, e in enumerate(kept_events):
+        ekey = _normalize_for_match(e.get("description"))
+        event_by_key.setdefault(ekey, idx)
+
+    drop_commit_idx: set[int] = set()
+    drop_event_idx: set[int] = set()
+    for ci, c in enumerate(kept_commits):
+        ckey = _normalize_for_match(c.get("text"))
+        if ckey in event_by_key:
+            ei = event_by_key[ckey]
+            if kept_events[ei].get("when_raw"):
+                drop_commit_idx.add(ci)
+            else:
+                drop_event_idx.add(ei)
+
+    extracted["commitments"] = [c for i, c in enumerate(kept_commits) if i not in drop_commit_idx]
+    extracted["events"] = [e for i, e in enumerate(kept_events) if i not in drop_event_idx]
+    extracted["open_questions"] = questions
+    return extracted
+
+
+# --------------------------------------------------------------------------- #
 # DigestService                                                                #
 # --------------------------------------------------------------------------- #
 
@@ -598,11 +738,16 @@ class DigestService:
             ),
         )
 
-        return await OpenAIService.complete_json(
+        extracted = await OpenAIService.complete_json(
             prompt,
             rendered,
             system="Ты помощник владельца. Возвращай только валидный JSON по схеме из инструкции.",
         )
+        # TECH-012 (step A): defensive filters on top of LLM output —
+        # questions don't belong in commits, halluciated 18:00 is dropped,
+        # cross-bucket duplicates collapse. ``messages_text`` is the same
+        # source the LLM saw, so haystack-based time/date checks are fair.
+        return _sanitize_extracted(extracted, formatted or "")
 
     async def _open_commitments(self, chat_id: UUID) -> List[Commitment]:
         result = await self.session.execute(

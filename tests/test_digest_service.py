@@ -209,6 +209,147 @@ def test_is_within_24h_handles_none():
 
 
 # ---------------------------------------------------------------------------
+# _sanitize_extracted — defensive filters on top of the LLM output (TECH-012)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_moves_question_commits_to_open_questions():
+    from src.services.digest_service import _sanitize_extracted
+
+    extracted = {
+        "commitments": [
+            {"direction": "from_me", "text": "Зум можешь сегодня дать?"},
+            {"direction": "from_me", "text": "Я пришлю отчёт", "deadline_raw": "до пятницы"},
+        ],
+        "events": [],
+        "open_questions": [],
+    }
+    out = _sanitize_extracted(extracted, messages_text="me: что-то про зум")
+    # Question moved out of commits.
+    assert len(out["commitments"]) == 1
+    assert "пришлю отчёт" in out["commitments"][0]["text"]
+    # And appeared in open_questions, with direction preserved.
+    assert any(q["text"].endswith("?") for q in out["open_questions"])
+    assert out["open_questions"][0]["direction"] == "from_me"
+
+
+def test_sanitize_drops_tiny_commits_without_deadline():
+    from src.services.digest_service import _sanitize_extracted
+
+    extracted = {
+        "commitments": [
+            {"direction": "from_me", "text": "как раз занимаюсь"},  # 3 words, no deadline → drop
+            {"direction": "from_me", "text": "сделаю"},  # 1 word, no deadline → drop
+            {
+                "direction": "from_me",
+                "text": "ок",
+                "deadline_raw": "до пятницы",
+            },  # has deadline, keep
+            {
+                "direction": "from_me",
+                "text": "напишу инвесторам про штраф",  # 4+ words → keep
+            },
+        ],
+        "events": [],
+        "open_questions": [],
+    }
+    out = _sanitize_extracted(extracted, messages_text="")
+    texts = [c["text"] for c in out["commitments"]]
+    assert "напишу инвесторам про штраф" in texts
+    assert "ок" in texts  # kept due to deadline
+    assert "как раз занимаюсь" not in texts
+    assert "сделаю" not in texts
+
+
+def test_sanitize_drops_hallucinated_18_00_when_not_in_source():
+    """LLM keeps lifting random events to '12 мая в 18:00' even when source
+    only mentions 'в пятницу'. We blank the time when there's no anchor.
+    """
+    from src.services.digest_service import _sanitize_extracted
+
+    extracted = {
+        "commitments": [],
+        "events": [
+            {"description": "all-hands встреча", "when_raw": "12 мая в 18:00"},
+            {"description": "встреча с СОЛИДом", "when_raw": "12 мая в 18:00"},
+        ],
+        "open_questions": [],
+    }
+    # Source says nothing about "18:00" or "12 мая".
+    out = _sanitize_extracted(extracted, messages_text="me: давай в пятницу обсудим")
+    # Both events kept (description is fine), but their fake date stripped.
+    assert len(out["events"]) == 2
+    assert out["events"][0]["when_raw"] is None
+    assert out["events"][1]["when_raw"] is None
+
+
+def test_sanitize_keeps_18_00_when_present_in_source():
+    from src.services.digest_service import _sanitize_extracted
+
+    extracted = {
+        "commitments": [],
+        "events": [
+            {"description": "встреча с командой", "when_raw": "12 мая в 18:00"},
+        ],
+        "open_questions": [],
+    }
+    out = _sanitize_extracted(
+        extracted,
+        messages_text="me: жду тебя 12 мая в 18:00, переговорка",
+    )
+    assert out["events"][0]["when_raw"] == "12 мая в 18:00"
+
+
+def test_sanitize_dedups_identical_events_within_chat():
+    from src.services.digest_service import _sanitize_extracted
+
+    extracted = {
+        "commitments": [],
+        "events": [
+            {"description": "Открытие офиса Silk Road", "when_raw": "26 мая"},
+            {"description": "открытие офиса Silk Road", "when_raw": "26 мая"},  # case
+            {"description": "Открытие офиса Silk Road", "when_raw": "26 мая"},  # exact dup
+        ],
+        "open_questions": [],
+    }
+    out = _sanitize_extracted(extracted, messages_text="we open silk road on 26 мая")
+    assert len(out["events"]) == 1
+
+
+def test_sanitize_resolves_commit_event_overlap():
+    """Same sentence in both buckets — event wins iff it has a date."""
+    from src.services.digest_service import _sanitize_extracted
+
+    # Case A: event has a date → drop the duplicate commit.
+    extracted_a = {
+        "commitments": [
+            {"direction": "from_me", "text": "сравнение предложений", "deadline_raw": "до 12.05"},
+        ],
+        "events": [
+            {"description": "Сравнение предложений", "when_raw": "12 мая"},
+        ],
+        "open_questions": [],
+    }
+    out_a = _sanitize_extracted(extracted_a, messages_text="до 12 мая буду сравнивать")
+    assert len(out_a["commitments"]) == 0
+    assert len(out_a["events"]) == 1
+
+    # Case B: event has no date → drop the duplicate event, keep commit.
+    extracted_b = {
+        "commitments": [
+            {"direction": "from_me", "text": "сравнение предложений", "deadline_raw": "до 12.05"},
+        ],
+        "events": [
+            {"description": "Сравнение предложений", "when_raw": None},
+        ],
+        "open_questions": [],
+    }
+    out_b = _sanitize_extracted(extracted_b, messages_text="когда-нибудь")
+    assert len(out_b["commitments"]) == 1
+    assert len(out_b["events"]) == 0
+
+
+# ---------------------------------------------------------------------------
 # Author normalisation in messages
 # ---------------------------------------------------------------------------
 
