@@ -15,6 +15,75 @@
 
 ## 🔴 High Priority
 
+### [TECH-010] Сохранять тело дайджеста в `daily_digests.body_md` для диагностики
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/database/models.py`,
+  `src/database/migrations/versions/20260509_0420_e7f9a1c3b5d7_add_body_md_to_daily_digests.py`,
+  `src/services/digest_service.py`, `tests/test_digest_service.py`
+
+**Problem Description**
+
+Утренний разбор полётов 9 мая показал: в БД лежат шумные коммиты
+(17 шт., все владелец отменил) и события (16 шт., LLM повторно
+ставит фейковое «12 мая в 18:00» на 9 строк подряд), но
+**текст самого ушедшего дайджеста нигде не сохранён** — `daily_digests`
+хранит только `digest_date / sent_at / chat_count / message_count`.
+Это блокирует любую постфактум-диагностику качества: нельзя ни
+проверить, что владелец реально увидел, ни сравнить «что
+извлечено» c «что отрисовано», ни откатить регрессию рендера.
+
+**Expected Behavior**
+
+- `daily_digests.body_md` (TEXT, nullable) хранит склеенный
+  MarkdownV2-текст, который ушёл во владельца: header + блок
+  на каждый чат, разделённые пустой строкой. Для тихого дня —
+  одно стандартное сообщение «Тихий день…».
+- Старые строки остаются с `body_md=NULL` (миграция совместима).
+- Запись `body_md` идёт ровно одной транзакцией с остальными
+  полями (никаких отдельных `UPDATE`-ов после отправки).
+
+**Technical Details**
+
+- Колонка `body_md TEXT NULL` в `daily_digests`.
+- Миграция Alembic: `add_body_md_to_daily_digests`,
+  `down_revision = 20260508_1300_d4e6f8a0c2b4`.
+- В `DigestService.send_for_day` накапливаем `body_parts: list[str]`,
+  туда складываем header (через новый `_render_header`, заменивший
+  старый асинхронный `_send_header`) и блоки чатов
+  (`_process_and_send_chat` теперь возвращает `str`).
+- Перед `session.add(DailyDigest(...))` собираем
+  `body_md = "\n\n".join(body_parts)`.
+- Тесты: `test_send_for_day_processes_each_chat` теперь ассертит,
+  что `body_md` содержит и header, и название чата.
+  Добавлен `test_send_for_day_records_body_on_quiet_day` —
+  тихий день тоже идёт в `body_md`.
+
+**Acceptance Criteria**
+
+- [x] Колонка `body_md` создана через Alembic.
+- [x] Миграция применяется на проде (`alembic upgrade head` в build
+      команде Render — поедет автоматически).
+- [x] `DailyDigest.body_md` заполняется при каждой отправке
+      `send_for_day(record=True)`.
+- [x] `make check` зелёный (102+ тестов).
+- [x] Можно SELECT'ом из `daily_digests` достать текст вчерашнего
+      дайджеста и сравнить с тем, что увидел владелец.
+
+**Resolution**
+
+Добавил nullable `daily_digests.body_md`, отрефакторил
+`send_for_day` так, чтобы header (`_render_header`) и блоки
+(`_process_and_send_chat` теперь возвращает `str`) накапливались в
+локальный `body_parts`, и записал их склеенными при создании
+`DailyDigest`. Старая логика отправки не изменилась. Этот шаг
+открывает диагностику для следующих фиксов в DigestService
+(parse_deadline / is_urgent / шум в extract'е) — теперь
+постфактум видно, что именно ушло.
+
+---
+
 ### [BUG-005] Классификация чатов не сохраняется (asyncpg DataError на `chat.updated_at`)
 
 - **Status:** ✅ Done

@@ -253,6 +253,31 @@ async def test_send_for_day_processes_each_chat():
     assert bot.send_message.await_count == 2
     second_call = bot.send_message.await_args_list[1]
     assert "My Chat" in second_call.args[1]
+    # TECH-010: full body must be persisted on the DailyDigest row so we
+    # can postmortem what was actually delivered.
+    session.add.assert_called_once()
+    digest_entry = session.add.call_args.args[0]
+    assert digest_entry.body_md is not None
+    assert "📊" in digest_entry.body_md  # header
+    assert "My Chat" in digest_entry.body_md  # chat block
+
+
+@pytest.mark.asyncio
+async def test_send_for_day_records_body_on_quiet_day():
+    """TECH-010: even on a silent day, the canned message goes into body_md."""
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_result_returning(scalar=None))
+    session.add = MagicMock()
+    bot = AsyncMock()
+
+    svc = DigestService(session, bot)
+    with patch.object(DigestService, "collect", AsyncMock(return_value=[])):
+        await svc.send_for_day(date(2026, 5, 8), record=True)
+
+    session.add.assert_called_once()
+    digest_entry = session.add.call_args.args[0]
+    assert digest_entry.body_md is not None
+    assert "Тихий день" in digest_entry.body_md
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Table,
+    Text,
     select,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -273,6 +274,11 @@ class DailyDigest(Base):
     )
     chat_count = Column(Integer, nullable=False, default=0)
     message_count = Column(Integer, nullable=False, default=0)
+    # Full MarkdownV2 body that was sent to the owner (without escaping
+    # already applied to the wire — we save the *rendered* string, joined by
+    # blank lines between chat blocks). Nullable for backwards compat with
+    # rows created before TECH-010.
+    body_md = Column(Text, nullable=True)
 
     def __repr__(self) -> str:
         return f"<DailyDigest(date={self.digest_date}, chats={self.chat_count})>"

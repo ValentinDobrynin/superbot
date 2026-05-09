@@ -267,16 +267,20 @@ class DigestService:
 
         items = await self.collect(day)
         date_str = day.strftime("%d.%m.%Y")
+        body_parts: List[str] = []  # captured for daily_digests.body_md
 
         if not items:
-            await self.bot.send_message(
-                settings.OWNER_ID,
-                f"📊 Дайджест за {date_str}\nТихий день — ни в одном чате не было сообщений.",
-            )
+            quiet = f"📊 Дайджест за {date_str}\n" "Тихий день — ни в одном чате не было сообщений."
+            await self.bot.send_message(settings.OWNER_ID, quiet)
+            body_parts.append(quiet)
         else:
-            await self._send_header(items, date_str)
+            header = self._render_header(items, date_str)
+            await self._send_md(header)
+            body_parts.append(header)
+
             for item in items:
-                await self._process_and_send_chat(item, day)
+                block = await self._process_and_send_chat(item, day)
+                body_parts.append(block)
 
             # Classification suggestions only after the day's prose is done
             # so the owner sees the digest first, then the meta-questions.
@@ -288,6 +292,7 @@ class DigestService:
                 sent_at=datetime.now(timezone.utc),
                 chat_count=len(items),
                 message_count=sum(len(i.messages) for i in items),
+                body_md="\n\n".join(body_parts) if body_parts else None,
             )
             self.session.add(entry)
             await self.session.commit()
@@ -295,16 +300,16 @@ class DigestService:
 
     # ---- internals ---- #
 
-    async def _send_header(self, items: Sequence[_ChatDigestItem], date_str: str) -> None:
+    def _render_header(self, items: Sequence[_ChatDigestItem], date_str: str) -> str:
         groups = sum(1 for i in items if not _is_business_private(i.chat))
         privates = sum(1 for i in items if _is_business_private(i.chat))
-        text = (
+        return (
             f"📊 *Дайджест за {md_escape(date_str)}* — {len(items)} чат\\(ов\\)\n"
             f"_групповых: {groups}, личных: {privates}_"
         )
-        await self._send_md(text)
 
-    async def _process_and_send_chat(self, item: _ChatDigestItem, day: date) -> None:
+    async def _process_and_send_chat(self, item: _ChatDigestItem, day: date) -> str:
+        """Render and send a single chat block; return the rendered MarkdownV2."""
         try:
             extracted = await self._extract(item, day)
             await self._persist(item.chat, extracted)
@@ -319,6 +324,7 @@ class DigestService:
             title = md_escape(item.chat.name or f"Chat {item.chat.telegram_id}")
             block = f"*{title}*\n_не удалось получить саммари — см\\. логи_"
         await self._send_md(block)
+        return block
 
     async def _extract(self, item: _ChatDigestItem, day: date) -> Dict[str, Any]:
         """Run the per-chat extraction prompt and return the parsed JSON."""
