@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -117,12 +118,224 @@ def previous_trigger_day(now_utc: Optional[datetime] = None) -> date:
 # --------------------------------------------------------------------------- #
 
 
+# TECH-011 (step D of digest cleanup) — bare ``dateparser`` chokes on the
+# Russian phrasing the bot actually receives ("до пятницы", "к выходным",
+# "до 12.05", "в следующую пятницу"). We pre-normalise the raw string into
+# something dateparser groks, and we capture urgency keywords separately
+# (so "срочно" / "asap" still flip ``is_urgent`` even when the deadline
+# itself is unparseable).
+
+_URGENCY_KEYWORDS = (
+    "срочно",
+    "срочный",
+    "срочная",
+    "срочное",
+    "срочные",
+    "немедленно",
+    "немедля",
+    "asap",
+    "as soon as possible",
+    "urgent",
+    "urgently",
+    "немедля",
+    "до конца дня",
+    "к концу дня",
+    "eod",
+    "end of day",
+)
+
+_URGENCY_RE = re.compile(
+    r"(?<![\wа-яёА-ЯЁ])(" + "|".join(map(re.escape, _URGENCY_KEYWORDS)) + r")(?![\wа-яёА-ЯЁ])",
+    re.IGNORECASE,
+)
+
+# Russian weekday morphology → nominative form that ``dateparser`` knows.
+# Cases covered: gen ("пятницы"), acc ("пятницу"), dat ("пятнице"),
+# instr ("пятницей"), prep ("пятнице"). Same for short forms ("пн/вт/...").
+_WEEKDAY_NORMALISE = {
+    # Понедельник
+    "понедельника": "понедельник",
+    "понедельнику": "понедельник",
+    "понедельником": "понедельник",
+    "понедельнике": "понедельник",
+    "пн": "понедельник",
+    # Вторник
+    "вторника": "вторник",
+    "вторнику": "вторник",
+    "вторником": "вторник",
+    "вторнике": "вторник",
+    "вт": "вторник",
+    # Среда
+    "среды": "среда",
+    "среду": "среда",
+    "средой": "среда",
+    "среде": "среда",
+    "ср": "среда",
+    # Четверг
+    "четверга": "четверг",
+    "четвергу": "четверг",
+    "четвергом": "четверг",
+    "четверге": "четверг",
+    "чт": "четверг",
+    # Пятница
+    "пятницы": "пятница",
+    "пятницу": "пятница",
+    "пятницей": "пятница",
+    "пятнице": "пятница",
+    "пт": "пятница",
+    # Суббота
+    "субботы": "суббота",
+    "субботу": "суббота",
+    "субботой": "суббота",
+    "субботе": "суббота",
+    "сб": "суббота",
+    # Воскресенье
+    "воскресенья": "воскресенье",
+    "воскресенью": "воскресенье",
+    "воскресеньем": "воскресенье",
+    "воскресении": "воскресенье",
+    "вс": "воскресенье",
+}
+
+_WEEKDAY_NOMINATIVE = {
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+}
+
+
+def has_urgency_keyword(raw: Optional[str]) -> bool:
+    """Return True if ``raw`` contains a phrase like 'срочно'/'asap'/'eod'."""
+    if not raw:
+        return False
+    return bool(_URGENCY_RE.search(raw))
+
+
+def _normalize_deadline_phrase(raw: str) -> Optional[str]:
+    """Rewrite a Russian deadline phrase into something dateparser can chew.
+
+    Returns ``None`` when the phrase is pure noise (urgency-only with no
+    temporal anchor) — caller can still flag it urgent via
+    ``has_urgency_keyword``.
+    """
+    text = raw.strip().lower()
+    if not text:
+        return None
+
+    # Whole-phrase shortcuts (must run before token-level rewrites, so e.g.
+    # "до конца дня" never gets stripped down to "дня").
+    shortcuts = {
+        "до конца дня": "сегодня 23:59",
+        "к концу дня": "сегодня 23:59",
+        "до конца недели": "воскресенье 23:59",
+        "к концу недели": "воскресенье 23:59",
+        "до конца месяца": "последний день месяца 23:59",
+        "к концу месяца": "последний день месяца 23:59",
+        "выходные": "суббота 09:00",
+        "на выходные": "суббота 09:00",
+        "на выходных": "суббота 09:00",
+        "к выходным": "суббота 09:00",
+        "до выходных": "пятница 23:59",
+        "eod": "сегодня 23:59",
+        "end of day": "сегодня 23:59",
+    }
+    if text in shortcuts:
+        return shortcuts[text]
+
+    # Strip a leading "deadline" preposition only if it's followed by a
+    # weekday/date token (so we don't accidentally strip "в 18:00").
+    # Examples: "до пятницы", "к понедельнику", "в следующую пятницу".
+    prefix_patterns = [
+        r"^до\s+",
+        r"^к\s+",
+        r"^в\s+следующ(ую|ий|ее)\s+",
+        r"^на\s+следующ(ую|ий|ее)\s+",
+        r"^на\s+ближайш(ую|ий|ее)\s+",
+        r"^по\s+",  # "по средам" — нерегулярно, но всё равно к среде ближайшей
+    ]
+    for pat in prefix_patterns:
+        text = re.sub(pat, "", text, count=1)
+
+    # Token-level normalisation of weekday morphology and "time of day"
+    # adverbs ("с утра"/"вечером"/...).
+    _TIME_OF_DAY = {
+        "утром": "09:00",
+        "утра": "09:00",  # "с утра"
+        "днём": "13:00",
+        "днем": "13:00",
+        "дня": "13:00",  # "с дня"
+        "вечером": "19:00",
+        "вечера": "19:00",  # "с вечера"
+        "ночью": "23:00",
+        "ночи": "23:00",  # "к ночи"
+    }
+    tokens = text.split()
+    norm_tokens: List[str] = []
+    for tok in tokens:
+        # Strip trailing punctuation that confuses dictionary lookups.
+        bare = tok.rstrip(",.;:!?")
+        if bare in _WEEKDAY_NORMALISE:
+            norm_tokens.append(_WEEKDAY_NORMALISE[bare])
+        elif bare in _TIME_OF_DAY:
+            norm_tokens.append(_TIME_OF_DAY[bare])
+        elif bare == "с":
+            # filler before "утра/вечера/ночи" — drop it so the time
+            # token stays standalone.
+            continue
+        else:
+            norm_tokens.append(tok)
+    text = " ".join(norm_tokens).strip()
+    if not text:
+        return None
+
+    # "12.05" / "12.5" / "12.05.26" / "12.05.2026" → rewrite to ISO
+    # ("2026-05-12") so dateparser doesn't second-guess between DMY and MDY
+    # nor confuse "12.05" with the time 12:05.
+    def _ru_date_to_iso(m: "re.Match[str]") -> str:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year_s = m.group(3)
+        if year_s is None:
+            year = datetime.now().year
+        else:
+            year = int(year_s)
+            if year < 100:
+                year += 2000
+        try:
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except ValueError:  # pragma: no cover — unreachable, kept for safety
+            return m.group(0)
+
+    text = re.sub(
+        r"(?<!\d)(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?!\d|:)",
+        _ru_date_to_iso,
+        text,
+    )
+
+    # If the phrase is now exactly a weekday with no time, anchor it to
+    # 23:59 МСК — semantically "by end of <day>" is what "до X" means.
+    if text in _WEEKDAY_NOMINATIVE:
+        return f"{text} 23:59"
+    # "сегодня"/"завтра" alone — anchor to 23:59 too (otherwise dateparser
+    # uses the current clock time, which is misleading for a deadline).
+    if text in ("сегодня", "завтра", "послезавтра"):
+        return f"{text} 23:59"
+    return text
+
+
 def parse_deadline(raw: Optional[str], *, now_utc: Optional[datetime] = None) -> Optional[datetime]:
     """Best-effort NL → tz-aware datetime parser.
 
     Uses ``dateparser`` with Russian locale and Europe/Moscow as the base
     timezone. Returns ``None`` if parsing fails or input is empty. Always
     returns a tz-aware UTC datetime to keep DB writes consistent.
+
+    Russian phrasing (cases, prepositions, "выходные"/"конец дня") is
+    pre-normalised — see ``_normalize_deadline_phrase``.
     """
     if not raw:
         return None
@@ -131,9 +344,13 @@ def parse_deadline(raw: Optional[str], *, now_utc: Optional[datetime] = None) ->
     except ImportError:  # pragma: no cover — dependency is required at runtime
         return None
 
+    normalised = _normalize_deadline_phrase(raw)
+    if normalised is None:
+        return None
+
     relative_base = (now_utc or datetime.now(timezone.utc)).astimezone(OWNER_TZ)
     parsed = dateparser.parse(
-        raw,
+        normalised,
         languages=["ru", "en"],
         settings={
             "TIMEZONE": "Europe/Moscow",
@@ -415,6 +632,11 @@ class DigestService:
             deadline_raw = raw.get("deadline_raw")
             deadline_at = parse_deadline(deadline_raw, now_utc=now_utc)
             llm_urgent = bool(raw.get("is_urgent"))
+            # Urgency comes from any of: explicit LLM flag, parsed
+            # deadline within 24h, or an urgency keyword anywhere in
+            # ``deadline_raw`` / ``text`` (covers "срочно"/"asap"/"eod"
+            # even when the deadline itself is unparseable).
+            keyword_urgent = has_urgency_keyword(deadline_raw) or has_urgency_keyword(text)
             self.session.add(
                 Commitment(
                     chat_id=chat.id,
@@ -422,7 +644,9 @@ class DigestService:
                     text=text,
                     deadline_raw=deadline_raw,
                     deadline_at=deadline_at,
-                    is_urgent=llm_urgent or is_within_24h(deadline_at, now_utc=now_utc),
+                    is_urgent=(
+                        llm_urgent or is_within_24h(deadline_at, now_utc=now_utc) or keyword_urgent
+                    ),
                     status="open",
                     source_message_id=raw.get("source_message_id"),
                 )
@@ -451,13 +675,16 @@ class DigestService:
             when_raw = raw.get("when_raw")
             when_at = parse_deadline(when_raw, now_utc=now_utc)
             llm_urgent = bool(raw.get("is_urgent"))
+            keyword_urgent = has_urgency_keyword(when_raw) or has_urgency_keyword(description)
             self.session.add(
                 Event(
                     chat_id=chat.id,
                     description=description,
                     when_raw=when_raw,
                     when_at=when_at,
-                    is_urgent=llm_urgent or is_within_24h(when_at, now_utc=now_utc),
+                    is_urgent=(
+                        llm_urgent or is_within_24h(when_at, now_utc=now_utc) or keyword_urgent
+                    ),
                     status="upcoming",
                     source_message_id=raw.get("source_message_id"),
                 )

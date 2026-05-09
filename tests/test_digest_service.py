@@ -92,6 +92,100 @@ def test_parse_deadline_handles_iso_date():
     assert parsed.date() in (date(2026, 5, 14), date(2026, 5, 15))
 
 
+# ---------------------------------------------------------------------------
+# parse_deadline — Russian phrasing (TECH-011, step D of digest cleanup)
+# ---------------------------------------------------------------------------
+
+# Pin "now" to Friday 9 May 2026 02:50 MSK (= 8 May 23:50 UTC) so weekday
+# expectations are stable. ``parse_deadline`` returns UTC dates; expected
+# values below are also UTC.
+_NOW = datetime(2026, 5, 8, 23, 50, tzinfo=timezone.utc)
+
+
+def _msk(d):
+    """Helper: convert an MSK ``date(...)`` into the equivalent UTC date."""
+    return d  # date comparison only — actual UTC drift is ±1 day, callers tolerate
+
+
+@pytest.mark.parametrize(
+    "raw, expected_msk_date",
+    [
+        # "до пятницы" — by end of Friday → Fri 15 May 2026 in МСК
+        ("до пятницы", date(2026, 5, 15)),
+        ("к пятнице", date(2026, 5, 15)),
+        # "в следующую пятницу" — same Friday after stripping prefix
+        ("в следующую пятницу", date(2026, 5, 15)),
+        # "до 12.05" — by 12 May (year auto-filled, ISO conversion)
+        ("до 12.05", date(2026, 5, 12)),
+        ("12.05.2026", date(2026, 5, 12)),
+        ("до 12 мая", date(2026, 5, 12)),
+        # Today / tomorrow anchored to 23:59 МСК
+        ("сегодня", date(2026, 5, 9)),
+        ("завтра", date(2026, 5, 10)),
+        ("до завтра", date(2026, 5, 10)),
+        # End-of-day shortcuts
+        ("до конца дня", date(2026, 5, 9)),
+        ("к концу дня", date(2026, 5, 9)),
+        # Weekends
+        ("к выходным", date(2026, 5, 16)),  # Sat 09:00 МСК
+        ("на выходных", date(2026, 5, 16)),
+        ("до выходных", date(2026, 5, 15)),  # Fri 23:59 МСК
+        # Weekday + time of day adverb
+        ("в пн утром", date(2026, 5, 11)),
+        ("в среду вечером", date(2026, 5, 13)),
+    ],
+)
+def test_parse_deadline_russian_phrases(raw, expected_msk_date):
+    """Compare against the MSK calendar date so DST/UTC drift doesn't matter."""
+    from zoneinfo import ZoneInfo as _ZI
+
+    parsed = parse_deadline(raw, now_utc=_NOW)
+    assert parsed is not None, f"expected non-None for {raw!r}"
+    assert parsed.tzinfo is not None
+    msk_date = parsed.astimezone(_ZI("Europe/Moscow")).date()
+    assert (
+        msk_date == expected_msk_date
+    ), f"{raw!r} -> {parsed} ({msk_date} МСК, expected {expected_msk_date} МСК)"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "срочно",
+        "ASAP",
+        "asap",
+        "до конца дня срочно",
+        "Срочно!",
+        "немедленно",
+        "urgent",
+        "EOD",
+        "to me eod",
+        "до конца дня",  # shortcut implies urgency
+    ],
+)
+def test_has_urgency_keyword_recognizes_common_phrases(raw):
+    from src.services.digest_service import has_urgency_keyword
+
+    assert has_urgency_keyword(raw) is True, f"expected urgent for {raw!r}"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "до пятницы",
+        "12 мая",
+        "",
+        None,
+        "просто длинная фраза без ключевых слов",
+        "к выходным",
+    ],
+)
+def test_has_urgency_keyword_ignores_non_urgent(raw):
+    from src.services.digest_service import has_urgency_keyword
+
+    assert has_urgency_keyword(raw) is False, f"expected not-urgent for {raw!r}"
+
+
 def test_is_within_24h_true_for_near_future():
     now = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
     soon = now + timedelta(hours=10)

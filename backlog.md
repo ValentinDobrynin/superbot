@@ -15,6 +15,103 @@
 
 ## 🔴 High Priority
 
+### [TECH-011] Чинить `parse_deadline` для русских предлогов и `is_urgent` keyword fallback
+
+- **Status:** ✅ Done
+- **Priority:** High
+- **Component:** `src/services/digest_service.py`,
+  `tests/test_digest_service.py`
+
+**Problem Description**
+
+В прод-БД на 9 мая лежали все 16 событий и все 17 коммитов с
+`is_urgent=false`, хотя по логике «дедлайн в течение 24 часов»
+хотя бы у части из них должно было сработать. Локальная проверка
+показала, что причина — `parse_deadline` возвращает `None` на
+самые частые русские формулировки в чатах:
+
+| `raw` | до фикса | почему |
+|---|---|---|
+| `до пятницы` | `None` | `dateparser` не понимает падежи + предлог «до» |
+| `к выходным` | `None` | то же |
+| `до 12.05` | `None` (или дата ≠ ожидаемая) | путал с временем 12:05 |
+| `до конца дня` | `None` | многословный шорткат |
+| `в следующую пятницу` | `None` | предлог + падеж |
+| `в среду с утра` | `None` | «с утра» теряется |
+| `срочно` / `asap` | `None` | это urgency-маркер, не дата — но `is_urgent` тоже не выставлялся |
+
+**Expected Behavior**
+
+- «до X» / «к X» / «в следующую X» / шорткаты «до конца дня»,
+  «к выходным», «на выходных» парсятся в осмысленные даты.
+- Day-of-week в любом падеже (`пятницы`/`пятницу`/`пятнице`,
+  плюс короткие формы `пн`/`вт`/`ср`/...) → правильный weekday.
+- `dd.mm` без года → текущий год; `dd.mm.yy` → 20yy. Разводим
+  ambiguity «12.05» vs «12:05» через ISO-конверсию до dateparser.
+- «X утром» / «вечером» / «днём» → конкретный час того дня.
+- `срочно`/`asap`/`немедленно`/`urgent`/`eod`/`до конца дня`
+  поднимают `is_urgent=True`, даже если сам `parse_deadline`
+  не нашёл точную дату.
+- `is_urgent` теперь = LLM-флаг **OR** `is_within_24h(deadline)`
+  **OR** keyword в `deadline_raw`/`text`(`description`).
+
+**Technical Details**
+
+- Новый helper `_normalize_deadline_phrase(raw)` в
+  `digest_service.py`:
+  - shortcuts: «до конца дня» → «сегодня 23:59»; «к выходным»
+    → «суббота 09:00»; «до выходных» → «пятница 23:59»; и др.
+  - regex strip префиксов «до /к /в следующую /на следующую /по».
+  - dict-нормализация падежей weekday → именительный.
+  - dict-нормализация «утром/днём/вечером/ночью» → конкретное HH:MM.
+  - regex `\d+\.\d+(\.\d+)?` → ISO `YYYY-MM-DD` (защита от dateparser
+    DMY/MDY ambiguity и от «12.05» → 12:05).
+  - bare weekday или «сегодня/завтра/послезавтра» без времени →
+    добавляем «23:59» (семантика «к концу дня»).
+- Новый helper `has_urgency_keyword(raw)` — regex по списку
+  `срочно|немедленно|asap|urgent|eod|end of day|до конца дня`
+  и т.д., word-boundaries безопасны для кириллицы.
+- `_persist`: `is_urgent` теперь `OR`-комбинация LLM-флага,
+  `is_within_24h(deadline)` и `has_urgency_keyword(deadline_raw|text)`.
+  Применено к Commitment и Event.
+- Тесты:
+  - `test_parse_deadline_russian_phrases` — 14 параметризованных
+    кейсов с проверкой по МСК-дате (избегаем UTC-drift).
+  - `test_has_urgency_keyword_recognizes_common_phrases` (10 кейсов).
+  - `test_has_urgency_keyword_ignores_non_urgent` (6 кейсов).
+- Live-проверка локально (см. shell run):
+  `до пятницы` → 15.05 23:59 МСК; `сегодня` → within24h=True;
+  `срочно` → urgent_kw=True; `до 12.05` → 12.05 00:00 МСК.
+
+**Acceptance Criteria**
+
+- [x] `parse_deadline` корректно обрабатывает все 14 формулировок
+      из теста.
+- [x] `has_urgency_keyword` ловит «срочно»/«asap»/«eod» и т.п.
+- [x] `_persist` ставит `is_urgent=True` хотя бы по одному из трёх
+      путей (LLM-флаг / ≤24h / keyword).
+- [x] `make check` зелёный (134 passed).
+- [x] Существующие тесты на ISO-даты не сломаны.
+
+**Resolution**
+
+Перепимал `parse_deadline`: добавил мощный pre-process
+(`_normalize_deadline_phrase`), который сначала рекомбинирует
+русские конструкции в форму, понятную `dateparser` (ISO даты,
+именительный падеж weekday, явное время для «утром/вечером»,
+шорткаты EOD / выходные). Параллельно вытащил `has_urgency_keyword`
+как отдельный публичный helper и подключил его к
+`_persist` для commits и events — теперь urgency определяется по
+любому из трёх независимых сигналов. Это закрывает основной
+«false-negative» вчерашнего дайджеста — все 16 событий и 17
+коммитов с `is_urgent=false`.
+
+Шаги A (defensive filters) и B (переписать промпты) идут следом —
+но D даёт сразу видимый эффект: «🔥 Срочное» в дайджесте
+перестаёт быть пустой секцией.
+
+---
+
 ### [TECH-010] Сохранять тело дайджеста в `daily_digests.body_md` для диагностики
 
 - **Status:** ✅ Done
